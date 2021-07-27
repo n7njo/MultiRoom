@@ -13,7 +13,18 @@ def button_handler(pin):
     global amp_pressed
     if not amp_pressed:
         amp_pressed=True
+        led_green.toggle()
         print(pin)
+        amp_pressed=False
+
+
+def button_handler_blue(pin):
+    global amp_pressed
+    if not amp_pressed:
+        amp_pressed=True
+        led_blue.toggle()
+        print(pin)
+        amp_pressed=False
 
 button_blue_source = machine.Pin(22, machine.Pin.IN, machine.Pin.PULL_UP)
 button_grey_amp = machine.Pin(21, machine.Pin.IN, machine.Pin.PULL_UP)
@@ -27,20 +38,10 @@ led_blue.value(0)
 led_red.value(0)
 led_green.value(0)
 
+button_blue_source.irq(trigger=machine.Pin.IRQ_RISING, handler=button_handler_blue)
 button_grey_amp.irq(trigger=machine.Pin.IRQ_RISING, handler=button_handler)
 
 while True:
-    led_onboard.toggle()
-    print("Onboard")
-    utime.sleep(0.1)
-    led_green.toggle()
-    print("Green")
-    utime.sleep(0.1)
-    led_red.toggle()
-    print("Red")
-    utime.sleep(0.1)
-    print("Blue")
-    led_blue.toggle()
-    utime.sleep(1)
+
     print(button_blue_source.value())
     print(button_grey_amp.value())
