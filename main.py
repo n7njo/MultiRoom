@@ -570,8 +570,8 @@ class UART_Communication(UART_Multiplexer):
         self.QueueLength = 0                                                        # Current number of requests in the queue            
         self.MaxQueueLength = Limit_UART_Max_Queue_Length                           # Max number of queued UAT requests
         self.Idle = True                                                            # Currently in use and communitaing
-        self.MaxQueueWaitSeconds = 15                                               # Longest a request can wait on the quque
-        self.MaxBusyQueueWaitSeconds = 10                                           # Longest a request can wait on a busy queue
+        self.MaxQueueWaitSeconds = 5                                               # Longest a request can wait on the quque
+        self.MaxBusyQueueWaitSeconds = 3                                           # Longest a request can wait on a busy queue
         self.MaxWaitResponse = 3                                                    # How long to wait for a UART response
         self.QueuedRequests = {}                                                    # -- Not sure how this will be implemented yet
         self.ResponseBuffer = {}                                                    # Responses populated in this buffer
@@ -692,8 +692,8 @@ class UART_Communication(UART_Multiplexer):
     def getQueue(self):
         return list(self.QueuedRequests.items())
 
-    # Worker processing responses
     def parseResponses(self):
+        "Worker processing responses"
         # Look through the queue for any completes
         for request in list(self.QueuedRequests.keys()):
             # Look through the queue for processed high priority responses
@@ -783,7 +783,7 @@ while True:
     #print(min(list(UART.QueuedRequests.items())))
     UART.parseResponses()
     UART.pruneQueue()
-    utime.sleep(0.1)
+    utime.sleep(0.001)
 
     # queueRequest = UART.requestCommand(1, "OLD","HIGH")
     # if queueRequest == False:
@@ -794,11 +794,4 @@ while True:
     #MA.refreshAllAmpStatus(UART)    
 
 
-###### Begin Main Thread ######
-
-# while True:
-#     for AmpNumber in range(len(AmpsInstalled)):
-#         print(AmpStates[AmpNumber].Name)
-#         utime.sleep(1)
-#         print()
 
