@@ -24,13 +24,9 @@
         # DAC output to control the voltages for the controls using all 3, one per amp.
         # Visual to see if sound playing from each amp
         # Reset amp option
+        # LED to show queue temperature
 
     # Questions?
-        # Can an interupt trigger a new thread
-        # Can somekind of object be used for the Amp status
-        # How many threads can be used, does it need to be controlled
-        # Are global variables across threads
-        # Shoud we have a thread for each type of request
         # Assume the only task in the main loop would be to display, poll status, read input
         # What output can be seen from the Amp to determine sound actually being played
         # What is PIO and can I use it
@@ -38,6 +34,7 @@
     # Answers
         # Primary thread recieves the interupt for the botton press, what happens if in the middle of a UART
         # Thought is for the UART to be on 2nd thread so conversations not interupted by button presses
+        # PIO is a very low level ablity to write a custom messaging protocal
 
 
 ### Object for Amp status
@@ -73,20 +70,82 @@ Button_Source_Cycle = machine.Pin(Pin_BUT_Source_Cycle, machine.Pin.IN, machine.
 Button_Amp_Cycle = machine.Pin(Pin_BUT_Amp_Cycle, machine.Pin.IN, machine.Pin.PULL_UP)
 
 # Limits
-Limit_UART_Max_Queue_Length = 5                     # Queue size for waiting UART requests
-Limit_UART_Multiplexer_Max_Channels = 16            # How many channels does the multiplexer have
-Limit_UART_Multiplexer_Max_Minutes_Looking = 16     # Max minutes to look for channels in available
-Limit_LineIn_Multiplexer_Max_Channels = 16          # Max chanels on the multiplexter for LineIn
-Limit_LineOut_Multiplexer_Max_Channels = 0          # Max chanels on the multiplexter for LineOut
+Limit_UART_Max_Queue_Length = 5                                                             # Queue size for waiting UART requests
+Limit_UART_Multiplexer_Max_Channels = 16                                                    # How many channels does the multiplexer have
+Limit_UART_Multiplexer_Max_Minutes_Looking = 10                                             # Max minutes to look for channels in available
+Limit_LineIn_Multiplexer_Max_Channels = 16                                                  # Max chanels on the multiplexter for LineIn
+Limit_LineOut_Multiplexer_Max_Channels = 0                                                  # Max chanels on the multiplexter for LineOut
 
 # Flags
-Flag_UART_Queuing_Enabled = True            # Can the UART queue messages
+Flag_UART_Queuing_Enabled = True                                                            # Can the UART queue messages
 
-# Mappings
-Map_LED_2_Source = {"Green":"Wifi","Blue":"Bluetooth","Red":"Line In","White":"Optical"}
+# Dictonary
 
 # Lists
-List_Sources_Enabled = ["Wifi","Bluetooth","Line In"]
+
+
+# Structure for MultiAmp
+class MultiAmp:
+    "Master class conatining all the amps"
+
+    def __init__(self):
+        self.Amplifiers = {}                                                                             # Amp Connected
+        self.Dict_LED_2_Source = {"Green":"Wifi","Blue":"Bluetooth","Red":"Line In","White":"Optical"}  # LED Source Mapping
+        self.List_Sources_Enabled = ["Wifi","Bluetooth","Line In"]                                      # Sources enabled
+        self.AmpSelected = 0                                                                            # Which Amp is currently primary
+        ### Variable of available Amps - To Be DELETED once Naming is Dynamic
+        self.AmpsInstalled = ["Oasis","Pool","Italian"]                                     
+
+    def ampDiscovery(self,cycleAttempts,waitForResponse):
+        "Cycle through the multiplexer a specified number of times waiting for a responce"
+        # What happens if the amp has changed it's name
+
+        # Loop from begnning to max sending a status message to each channel
+        for cycles in range(cycleAttempts):
+            # Loop through all the channels on the multiplexer
+            for channel in range(Limit_UART_Multiplexer_Max_Channels):
+                ## Only needed because pulling from predefined list
+                if len(self.AmpsInstalled) > channel:
+                    AmpName = self.AmpsInstalled[channel]
+                    #print(str(channel) + ":"+ AmpName)
+
+                    if self.Amplifiers.get(channel):
+                        print("Skipping: ", end='')
+                        print(self.Amplifiers[channel].Name)
+                    else:
+                        print("Creating Amp: ", end='')
+                        NewAmp = Amp()
+                        self.Amplifiers[channel] = NewAmp 
+                        self.Amplifiers[channel].Name = AmpName
+                        self.Amplifiers[channel].AvailableSources = self.List_Sources_Enabled
+                        print(self.Amplifiers[channel].Name)
+
+                # No hardcoded Amp name found - REMOVE once dynamic
+                #else:
+                    #print(channel, end='')
+
+            # Validate if the name matches that in the multiplexer list
+                # If the name is different, update the name
+
+    def setAmpSelected(self,channel):
+        "Change selected amp"
+        self.AmpSelected = channel
+
+    def getAmpSelected(self):
+        "Return current selected amp"
+        return self.AmpSelected
+
+    def refreshAmpStatus(self,channel):
+        "Gather status information on specific amplifier"
+
+    def refreshAllAmpStatus(self,_uart):
+        "Update all amplifier statuses"
+        for channel in list(self.Amplifiers.keys()):
+            print ("Refresh status: " + self.Amplifiers[channel].Name, end='')
+            responseTimestamp = _uart.requestCommand(channel, "STA","Low")
+
+            print(responseTimestamp)
+        
 
 # Amp status object
 class Amp:
@@ -98,13 +157,13 @@ class Amp:
         self.Volume = 1
         self.PlayState = "Stop"
         self.Audiable = "No"
-        self.OutputValue = 1
+        self.OutputValue = 1                                # Validation there is output?
         self.Track = ""
         self.Artist = ""
         self.Album = ""
-        self.AvailableSources = "Stream,LineIn"
+        self.TrackPosition = 0
+        self.AvailableSources = []
         self.MaxVolume = 10
-        self.MultiplexerChannel = 0
 
     def getSystemState(self):
         "Confirm status of amp"
@@ -442,13 +501,12 @@ class Display:
     "Control of Display"
 
 
-#### MERGE THE MULTIPLEXER CONTROLS INTO A SINGLE CODED OBJECT
 
 # Control a Multiplexer
 class Multiplexer:
     "Generic multiplexer controls"
 
-    def __init__(self, Max, Live):
+    def __init__(self, Max, Live) -> None:
         self.MaxChannels = Max                                                      # Max number of multiplexer channels
         self.LiveChannel = Live                                                     # Current channel live
         self.ListofChannelNames = []                                                # List of channels available 
@@ -463,6 +521,7 @@ class Multiplexer:
 
     def setLiveChannel(self,channelNumber):
         "Select channel destination"
+        #print("Selecting channel: " + str(channelNumber))
         self.LiveChannel = channelNumber
 
     def getChannelList(self):
@@ -473,12 +532,12 @@ class Multiplexer:
         "How many channels are now available"
         return len(self.ListofChannelNames)
 
-    def getIsChannelConfigured(self,channelNumber):
-        "Is the channel number requested actually configured"
-        if self.ListofChannelNames[channelNumber] != '':
-            return True
-        else:
-            return False
+    # def getIsChannelConfigured(self,channelNumber):
+    #     "Is the channel number requested actually configured"
+    #     if self.ListofChannelNames[channelNumber] != '':
+    #         return True
+    #     else:
+    #         return False
 
 # Control of the UART Multiplexer
 class UART_Multiplexer(Multiplexer):
@@ -503,158 +562,243 @@ class LineOut_Multiplexer(Multiplexer):
         super.__init__(Limit_LineOut_Multiplexer_Max_Channels,1)                     # Inherit everything from Multiplexer
 
 # Control of the UART communication
-class UART_Communication:
+class UART_Communication(UART_Multiplexer):
 
-    def __init__(self) -> None:          
+    def __init__(self) -> None:
+        super().__init__                                                            # Import the UART multiplexer         
         self.QueuingEnabled = Flag_UART_Queuing_Enabled                             # Toggle to disable queuing
-        self.NextRequestPosition = 1                                                # Which queue position to read from next
         self.QueueLength = 0                                                        # Current number of requests in the queue            
         self.MaxQueueLength = Limit_UART_Max_Queue_Length                           # Max number of queued UAT requests
         self.Idle = True                                                            # Currently in use and communitaing
-        self.MaxQueueWaitSeconds = 15                                                # How long to wait before request rejected
+        self.MaxQueueWaitSeconds = 15                                               # Longest a request can wait on the quque
+        self.MaxBusyQueueWaitSeconds = 10                                           # Longest a request can wait on a busy queue
         self.MaxWaitResponse = 3                                                    # How long to wait for a UART response
         self.QueuedRequests = {}                                                    # -- Not sure how this will be implemented yet
-        self.ResponseBuffer = []                                                    # Responses populated in this buffer
+        self.ResponseBuffer = {}                                                    # Responses populated in this buffer
         self.LastProcessedRequest = 0                                               # Timestamp of last processed request
 
-    def sendNextCommandFromUARTQueue(self):
-        "SECOND THREAD: Check message request queue and send"
-        # If queue not empty, check if multiplexer idle
-            # Lock mutliplexer idle
-                # Read channel and command request from queue, set multiplexer to destination channel
-                    # Send message
-                    # Push response into buffer
-                    # Increment Next Request position and decrement Queue Length
-                    # Update last processed request
-            # Unlock multiplexer idle
-        
 
-    def requestUARTCommand(self,channelNumber,message):
+
+
+    # UART Threaded worker
+    def sendNextCommandFromQueue(self):
+        "SECOND THREAD: Check message request queue and send"
+
+        #global QueuedRequests
+
+        while True:
+            # If queue not empty, check if multiplexer idle
+            if len(self.QueuedRequests) > 0 and self.Idle == True:
+                # Lock mutliplexer idle
+                self.Idle = False
+                # Select oldest waiting request
+                request = self.tickNow()
+                found = False
+                # Find the oldest high priority request
+                for lowest in (self.QueuedRequests.keys()):
+                    if self.QueuedRequests[lowest][2] == False and self.QueuedRequests[lowest][3] == "High":
+                        if lowest < request:
+                            request = lowest
+                            found = True
+
+                # If no high priority requests, find the oldest low priorty request
+                if not found:
+                    for lowest in (self.QueuedRequests.keys()):
+                        if self.QueuedRequests[lowest][2] == False and self.QueuedRequests[lowest][3] == "Low":
+                            if lowest < request:
+                                request = lowest
+                                found = True
+
+                if found and request in self.QueuedRequests:
+                    ### Process Request ###
+                    # Select Multiplexer
+                    self.setLiveChannel(self.QueuedRequests[request][0])
+                    # Send message
+                    self.ResponseBuffer[request]=self.transmitRequest(self.QueuedRequests[request][1])
+                    # Push response into buffer
+                    self.QueuedRequests[request][2] = True
+                    print(".")
+                # Unlock multiplexer idle
+                self.Idle = True
+                #utime.sleep(2)
+    
+    def transmitRequest(self,message):
+        return "ALIVE"+message
+
+    def removeFromQueue(self,request):
+        baton.acquire() 
+        del self.ResponseBuffer[request]
+        del self.QueuedRequests[request]
+        baton.release()
+
+    def pushToQueue(self,channel,message,priority):
+        addedToQueueTicks = utime.ticks_us()
+
+        # Lock Variable
+        baton.acquire()
+        # Add request to the queue - True/False flag indicates response complete
+        self.QueuedRequests[addedToQueueTicks] = [channel,message,False,priority]
+        # Add placeholder for response
+        self.ResponseBuffer[addedToQueueTicks] = [""]
+        baton.release()
+        return addedToQueueTicks
+
+    def secondsBetweenTick(self,firstTimestamp,secondTimestamp):
+        return utime.ticks_diff(firstTimestamp,secondTimestamp)
+
+    def secondsSinceTick(self,timestamp):
+        return round(self.secondsBetweenTick(self.tickNow(),timestamp)/1000000,4)
+
+    def tickNow(self):
+        return utime.ticks_us()
+
+    def requestCommand(self,channel,message,priority):
         "Requests an API message to the UART on a particular channel"
+        ##print(" -> UART Request: '" + message + "' from " + str(channel))
 
         # Check to see if the channel is actaully configured
+        if MA.Amplifiers.get(channel):
             # If the queue length at it's max, run prune queue and check length again
-                # If queue full return failed
-            # If the (request queue has space AND the related response buffer is empty), add command and timestamp to queue and check response buffer
+            if len(self.QueuedRequests) < self.MaxQueueLength:
+                # Returns the unique timestamp used as a key
+                return (self.pushToQueue(channel,message,priority))
+            else:
+                    print("Queue full")
+                    return False
+        else:
+            print("Bad Channel")
+            return False
+            
+            
 
-    def pruneUARTQueue(self):
-        "Look for requests which are old and prune from quque"
+    def pruneQueue(self):
+        "Look for requests which are old and prune from queue"
         # Loop through each queue position to look for queue item are older than max queue wait time
-            # If old request found, check if last processed request is greater than than max queue time
-                # Clear buffer response for item and remove old request from queue  
+        for request in list(self.QueuedRequests.keys()):
+            # Message older than max time and likely stale
+            if int(self.secondsSinceTick(request)) > self.MaxQueueWaitSeconds:
+                print("-")
+                self.removeFromQueue(request)
+            # Queue busy and message older than reasonable
+            if (int(self.secondsSinceTick(request))) > self.MaxBusyQueueWaitSeconds and len(self.QueuedRequests) > self.MaxQueueLength:
+                print("--")
+                self.removeFromQueue(request)
+
+    def printQueue(self):
+        "Return current queue"
+        print("QUEUE")
+        print(self.QueuedRequests)
+
+    def getQueue(self):
+        return list(self.QueuedRequests.items())
+
+    # Worker processing responses
+    def parseResponses(self):
+        # Look through the queue for any completes
+        for request in list(self.QueuedRequests.keys()):
+            # Look through the queue for processed high priority responses
+            if self.QueuedRequests[request][2] == True and self.QueuedRequests[request][3] == "High":
+                # Interpret the request to determine the action needed
+                # Push the data
+
+                # Remove the queue
+                self.removeFromQueue(request)
+
+        # Look through the queue for processed low priority responses
+        for request in list(self.QueuedRequests.keys()):
+            if self.QueuedRequests[request][2] == True and self.QueuedRequests[request][3] == "Low":
+
+                # Interpret the request to determine the action needed
+                # Push the data
+
+                # Remove the queue
+                self.removeFromQueue(request)
+
+            # Call the function required with the variables
 
 
-    def ampDiscovery(self,cycleAttempts,waitForResponse):
-        "Cycle through the multiplexer a specified number of times waiting for a responce"
-
-        # Loop from begnniong to max sending a status message to each channel
-            # Validate if the name matches that in the multiplexer list
-                # If the name is different, update the name
-
-
-### Variable of available Amps
-
-AmpNumber = 0                               # This could be calculated from talking via each multiplexer and seeing who responds.
-AmpsInstalled = ["Oasis","Pool","Italian"]  # Since that can be stored in the Amp after power up, extract from there periodically
-
-
-
-### Variable Amp primary
-# Which amp is currently selected
-AmpSelected = 0
 
 ### Function to detect button press
 # Interupt if any button depressed (VNR,Eject,Stop,Play/Pause/Forward/Rewind)
-def Button_Handler(pin):
-    print(pin)
+# def Button_Handler(pin):
+#     print(pin)
 
-    if pin == Pin_Source_Cycle:
-        print("Source")
-    elif pin == Pin_Amp_Cycle:
-        print("Amp")
-    else:
-        print("?")
-
-
-
-### Function to select UART
-# Message to multiplexer to change UART selected
-# Validate not inuse first, queues for x time, rejects request if someone waiting
-# Is the end point transmitting
+#     if pin == Pin_Source_Cycle:
+#         print("Source")
+#     elif pin == Pin_Amp_Cycle:
+#         print("Amp")
+#     else:
+#         print("?")
 
 
-### Function to send and recieve UART information
-# Provided a selected amp to send the message
-# Selects the Amp (handling rejection)
-# Provided a message to send and stores the responce
+### Configure button interupts
 
+# print("Configuring button interupts...", end= '')
+# Button_Source_Cycle.irq(trigger=machine.Pin.IRQ_RISING, handler=Button_Handler)
+# print("source", end = '')
+# Button_Amp_Cycle.irq(trigger=machine.Pin.IRQ_RISING, handler=Button_Handler)
+# print(",amp", end = '')
+# print(" done")
+# print()
 
 ### Function to detect IR request
 
 
-### Function to convert request to action
-# Creates message to be sent to the Amp via UART
-# Updates the Amp status
-
-
-### Function to poll for amp status details
-# Round Robin through amp
-# Handles rejection,
-
 ### Function to push Amp status to the display buffer
 # Use framebuf micropython
 
-
 ### Function to read if there's input from the output of each amp
-
 
 ### Function to set LineIn destination Amp
 
 
-### Second Thread Function ###
-
-def UART_Communication ():
-    print("...")
-    while True:
-        LED_Internal.toggle()
-        utime.sleep(1)
-
-
 ###### Begin Main ######
 
+print("STARTING")
 
-### Creating an array of Amp objects
-print("Creating Amp objects...", end = '')
-AmpStates = [Amp() for AmpNumber in range(len(AmpsInstalled))]
+# Initiate Primary Object
+MA = MultiAmp()
 
-for AmpNumber in range(len(AmpsInstalled)):
-    AmpStates[AmpNumber].Name = AmpsInstalled[AmpNumber]
+# Initiate UART
+UART = UART_Communication()
 
-print("done")
-print()
+# Find Amps and create the objects
+MA.ampDiscovery(1,1)
 
 ###### Spawning Second Thread ######
 
-print("Spawning UART thread", end= '')
-_thread.start_new_thread(UART_Communication, ())
-print(" done")
-print()
+print("SPAWN")
+_thread.start_new_thread(UART.sendNextCommandFromQueue, ())
+baton = _thread.allocate_lock()
 
-### Configure button interupts
+MA.refreshAllAmpStatus(UART)
 
-print("Configuring button interupts...", end= '')
-Button_Source_Cycle.irq(trigger=machine.Pin.IRQ_RISING, handler=Button_Handler)
-print("source", end = '')
-Button_Amp_Cycle.irq(trigger=machine.Pin.IRQ_RISING, handler=Button_Handler)
-print(",amp", end = '')
-print(" done")
-print()
+UART.requestCommand(1, "PLA","High")
+UART.requestCommand(1, "OLD","Pause")
+
+
+while True:
+    
+    print(len(UART.getQueue()))
+    #print(min(list(UART.QueuedRequests.items())))
+    UART.parseResponses()
+    UART.pruneQueue()
+    utime.sleep(0.1)
+
+    # queueRequest = UART.requestCommand(1, "OLD","HIGH")
+    # if queueRequest == False:
+    #     print("Request failed")
+    # else:
+    #     print(queueRequest)
+
+    #MA.refreshAllAmpStatus(UART)    
+
 
 ###### Begin Main Thread ######
 
-while True:
-    for AmpNumber in range(len(AmpsInstalled)):
-        print(AmpStates[AmpNumber].Name)
-        utime.sleep(1)
-        print()
+# while True:
+#     for AmpNumber in range(len(AmpsInstalled)):
+#         print(AmpStates[AmpNumber].Name)
+#         utime.sleep(1)
+#         print()
 
