@@ -77,7 +77,7 @@ Limit_LineIn_Multiplexer_Max_Channels = 16                                      
 Limit_LineOut_Multiplexer_Max_Channels = 0                                                  # Max chanels on the multiplexter for LineOut
 
 # Flags
-Flag_UART_Queuing_Enabled = True                                                            # Can the UART queue messages
+Flag_UART_Threading_Enabled = False                                                            # Can the UART queue messages
 
 # Dictonary
 
@@ -576,7 +576,7 @@ class UART_Communication(UART_Multiplexer):
 
     def __init__(self) -> None:
         super().__init__                                                            # Import the UART multiplexer         
-        self.QueuingEnabled = Flag_UART_Queuing_Enabled                             # Toggle to disable queuing
+        self.QueuingEnabled = Flag_UART_Threading_Enabled                             # Toggle to disable queuing
         self.QueueLength = 0                                                        # Current number of requests in the queue            
         self.MaxQueueLength = Limit_UART_Max_Queue_Length                           # Max number of queued UAT requests
         self.Idle = True                                                            # Currently in use and communitaing
@@ -587,75 +587,157 @@ class UART_Communication(UART_Multiplexer):
         self.ResponseBuffer = {}                                                    # Responses populated in this buffer
         self.LastProcessedRequest = 0                                               # Timestamp of last processed request
 
-
-
-
-    # UART Threaded worker
+    # UART NON-Threaded worker
     def sendNextCommandFromQueue(self):
-        "SECOND THREAD: Check message request queue and send"
-        lastProcessed = tickNow()
+        "Check message request queue and send"
 
-        while True:
+        # If queue not empty, check if multiplexer idle
+        if self.getRequestQueueLength() > 0 and self.Idle == True:
+            print(UART.getRequestQueueLength(), end='')
+            #print(list(self.getQueueRequests()))
+            #self.printQueue()
+            # Lock mutliplexer idle
+            self.Idle = False
+            # Select oldest waiting request
+            request = tickNow()
+            found = False
+            # Find the oldest high priority request
+            for lowest in (self.getQueueRequests()):
+                if self.getRequestComplete(lowest) == False and self.getRequestPriority(lowest) == "High":
+                    print("*", end='')
+                    if lowest < request:
+                        request = lowest
+                        found = True
 
-            ##if secondsSinceTick(lastProcessed) > 1:
-            #lastProcessed = tickNow()
-            # If queue not empty, check if multiplexer idle
-            if len(self.QueuedRequests) > 0 and self.Idle == True:
-                # Lock mutliplexer idle
-                self.Idle = False
-                # Select oldest waiting request
-                request = tickNow()
-                found = False
-                # Find the oldest high priority request
-                for lowest in (self.QueuedRequests.keys()):
-                    if self.QueuedRequests[lowest][2] == False and self.QueuedRequests[lowest][3] == "High":
-                        print("*", end='')
-                        if lowest < request:
-                            request = lowest
-                            found = True
-
-                # If no high priority requests, find the oldest low priorty request
-                if not found:
-                    for lowest in (self.QueuedRequests.keys()):
-                        if self.QueuedRequests[lowest][2] == False and self.QueuedRequests[lowest][3] == "Low":
+            # If no high priority requests, find the oldest low priorty request
+            if found == False:
+                for lowest in (self.getQueueRequests()):
+                        if self.getRequestComplete(lowest) == False and self.getRequestPriority(lowest) == "Low":
                             if lowest < request:
                                 request = lowest
                                 found = True
 
-                if found and request in self.QueuedRequests:
-                    ### Process Request ###
-                    # Select Multiplexer
-                    self.setLiveChannel(self.QueuedRequests[request][0])
-                    # Send message
-                    self.ResponseBuffer[request]=self.transmitRequest(self.QueuedRequests[request][1])
-                    # Push response into buffer
-                    baton.acquire()
-                    self.QueuedRequests[request][2] = True
-                    baton.release()
-                    print(".", end='')
-                # Unlock multiplexer idle
-                self.Idle = True
+            if found == True and request in self.getQueueRequests():
+                ### Process Request ###
+                # Select Multiplexer
+                self.setLiveChannel(self.getRequestChannel(request))
+                # Send message
+                self.ResponseBuffer[request]=self.transmitRequest(self.getRequestMessage(request))
+                # Push response into buffer
+                self.setRequestComplete(request,True)
+                print(".", end='')
+            # Unlock multiplexer idle
+            self.Idle = True
+
+
+    # UART Threaded worker
+    def THREADsendNextCommandFromQueue(self):
+        "SECOND THREAD: Check message request queue and send"
+        lastProcessed = utime.ticks_ms()
+
+        while True:
+            try:
+                #UART.printQueue()    
+                ##if secondsSinceTick(lastProcessed) > 1:
+                lastProcessed = tickNow()
+                # If queue not empty, check if multiplexer idle
+                if self.getRequestQueueLength() > 0 and self.Idle == True:
+                    # Lock mutliplexer idle
+                    self.Idle = False
+                    # Select oldest waiting request
+                    request = tickNow()
+                    found = False
+                    # Find the oldest high priority request
+                    for lowest in (self.QueuedRequests.keys()):
+                        if self.getRequestComplete(lowest) == False and self.getRequestPriority(lowest) == "High":
+                            print("*", end='')
+                            if lowest < request:
+                                request = lowest
+                                found = True
+
+                    # If no high priority requests, find the oldest low priorty request
+                    if not found:
+                        for lowest in (self.QueuedRequests.keys()):
+                            if self.getRequestComplete(lowest) == False and self.getRequestPriority(lowest) == "Low":
+                                if lowest < request:
+                                    request = lowest
+                                    found = True
+
+                    if found and request in self.QueuedRequests:
+                        ### Process Request ###
+                        # Select Multiplexer
+                        self.setLiveChannel(self.getRequestChannel(request))
+                        # Send message
+                        self.ResponseBuffer[request]=self.transmitRequest(self.getRequestMessage(request))
+                        # Push response into buffer
+                        self.setRequestComplete(request,True)
+                        print(".")
+                    # Unlock multiplexer idle
+                    self.Idle = True
+            except Exception:
+                print("EXECPTION")
     
     def transmitRequest(self,message):
         return "ALIVE"+message
 
     def removeFromQueue(self,request):
-        baton.acquire() 
+        if Flag_UART_Threading_Enabled == True:
+            baton.acquire() 
         del self.ResponseBuffer[request]
         del self.QueuedRequests[request]
-        baton.release()
+        if Flag_UART_Threading_Enabled == True:
+            baton.release()
 
     def pushToQueue(self,channel,message,priority):
         addedToQueueTicks = tickNow()
 
         # Lock Variable
-        baton.acquire()
+        if Flag_UART_Threading_Enabled == True:
+            baton.acquire()
         # Add request to the queue - True/False flag indicates response complete
         self.QueuedRequests[addedToQueueTicks] = [channel,message,False,priority]
         # Add placeholder for response
         self.ResponseBuffer[addedToQueueTicks] = [""]
-        baton.release()
+        if Flag_UART_Threading_Enabled == True:
+            baton.release()
         return addedToQueueTicks
+
+    def getRequestQueueLength(self):
+        #baton.acquire()
+        length = len(self.QueuedRequests)
+        #baton.release()
+        return length
+
+    def getRequestChannel(self,request):
+        #baton.acquire()
+        channel = self.QueuedRequests[request][0]
+        #baton.release()
+        return channel
+
+    def getRequestMessage(self,request):
+        #baton.acquire()
+        message = self.QueuedRequests[request][1]
+        #baton.release()
+        return message
+
+    def getRequestComplete(self,request):
+        #baton.acquire()
+        complete = self.QueuedRequests[request][2]
+        #baton.release()
+        return complete
+
+    def getRequestPriority(self,request):
+        #baton.acquire()
+        priority = self.QueuedRequests[request][3]
+        #baton.release()
+        return priority
+
+    def setRequestComplete(self,request,complete):
+        if Flag_UART_Threading_Enabled == True:
+            baton.acquire()
+        self.QueuedRequests[request][2]=complete
+        if Flag_UART_Threading_Enabled == True:
+            baton.release()
 
     def requestCommand(self,channel,message,priority):
         "Requests an API message to the UART on a particular channel"
@@ -664,7 +746,7 @@ class UART_Communication(UART_Multiplexer):
         # Check to see if the channel is actaully configured
         if MA.Amplifiers.get(channel):
             # If the queue length at it's max, run prune queue and check length again
-            if len(self.QueuedRequests) < self.MaxQueueLength:
+            if self.getRequestQueueLength() < self.MaxQueueLength:
                 # Returns the unique timestamp used as a key
                 return (self.pushToQueue(channel,message,priority))
             else:
@@ -685,7 +767,7 @@ class UART_Communication(UART_Multiplexer):
                 print("-", end='')
                 self.removeFromQueue(request)
             # Queue busy and message older than reasonable
-            if (int(secondsSinceTick(request))) > self.MaxBusyQueueWaitSeconds and len(self.QueuedRequests) > self.MaxQueueLength:
+            if (int(secondsSinceTick(request))) > self.MaxBusyQueueWaitSeconds and self.getRequestQueueLength() > self.MaxQueueLength:
                 print("+", end='')
                 self.removeFromQueue(request)
 
@@ -697,6 +779,9 @@ class UART_Communication(UART_Multiplexer):
 
     def getQueue(self):
         return list(self.QueuedRequests.items())
+    
+    def getQueueRequests(self):
+        return list(self.QueuedRequests.keys())
 
     def parseResponses(self):
         "Worker processing responses"
@@ -773,24 +858,25 @@ MA.ampDiscovery(1,1)
 
 ###### Spawning Second Thread ######
 
-print("SPAWN")
-_thread.start_new_thread(UART.sendNextCommandFromQueue, ())
-baton = _thread.allocate_lock()
-utime.sleep(0.5)
+if Flag_UART_Threading_Enabled == True:
+    print("SPAWN")
+    _thread.start_new_thread(UART.THREADsendNextCommandFromQueue, ())
+    baton = _thread.allocate_lock()
 
 MA.refreshAllAmpStatus(UART)
 
-UART.requestCommand(1, "PLA","High")
-UART.requestCommand(1, "OLD","Pause")
+#UART.requestCommand(1, "PLA","High")
+#UART.requestCommand(1, "OLD","Pause")
 
 lastPrune = tickNow()
 lastParse = tickNow()
 lastAutoGenerate = tickNow()
 lastQueuePrint = tickNow()
+lastProcessed = tickNow()
 
 while True:
 
-    if secondsSinceTick(lastParse) > 0.5:
+    if secondsSinceTick(lastParse) > 0.1:
         lastParse = tickNow()
         UART.parseResponses()
 
@@ -800,18 +886,21 @@ while True:
 
     if secondsSinceTick(lastQueuePrint) > 1:
         lastQueuePrint = tickNow()
-        UART.printQueue()
-        #print(len(UART.getQueue()))
+        #UART.printQueue()
 
     if secondsSinceTick(lastAutoGenerate) > 2:
         lastAutoGenerate = tickNow()  
-        #MA.refreshAllAmpStatus(UART) 
-        queueRequest = UART.requestCommand(1, "OLD","HIGH")
+        MA.refreshAllAmpStatus(UART) 
+        queueRequest = UART.requestCommand(1, "OLD","High")
         if queueRequest == False:
-            print("!", end='')
+            print("F", end='')
+            #print(UART.getRequestQueueLength())
         else:
-            print("^", end='')
+            print("A", end='')
 
+    if secondsSinceTick(lastProcessed) > 0.01 and Flag_UART_Threading_Enabled == False:
+        lastProcessed = tickNow()
+        UART.sendNextCommandFromQueue()
 
 
 
