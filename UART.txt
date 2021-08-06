@@ -75,3 +75,38 @@ POM[:{source}]	4	POM:{source}	{source} system source	set the input mode when pow
 ZON:{zone}:{msg}	4	related to {msg} sent	{zone} zone index, or use ALL to all zones
 {msg} detailed API message	send API message to specified zone, and will reply with the response message
 only available on model M400, zone index can be set by 7 PINs on right side
+
+
+
+
+
+Amp generated:
+
+PLA:0;
+ELP:173060/250400;
+PLA:1;
+ELP:173060/250400;
+TIT:Sarabande (From "Barry Lyndon");
+ART:The City of Prague Philharmonic Orchestra;
+ALB:100 Greatest Film Themes;
+VND:Spotify;
+ELP:173060/250400;
+ELP:173803/250400;
+TIT:Sarabande (From "Barry Lyndon");
+ART:The City of Prague Philharmonic Orchestra;
+ALB:100 Greatest Film Themes;
+VND:Spotify;
+ELP:173803/250400;
+ELP:174824/250400;
+
+LPM:REPEATSHUFFLE;
+LPM:REPEATALL;
+ELP:28010/204760;
+LPM:REPEATONE;
+ELP:31076/204760;
+LPM:SEQUENCE;
+
+CHN:L;
+CHN:R;
+CHN:S;
+NAM:42617468726F6F6D;
