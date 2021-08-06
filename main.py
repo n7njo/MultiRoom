@@ -154,32 +154,15 @@ class MultiAmp:
         # self.getSource(ampNumber,_uart) 
         # self.getVolume(ampNumber,_uart) 
         #print(responseTimestamp)
-        request = self.Amplifiers[ampNumber].requestSystemState(ampNumber,_uart)
-        if request == None:
-            print ("Failed")
-        #Missing song info
-        print()
-        print(str(self.Amplifiers[ampNumber].getPlaybackStatus()) + "<-->'" + str(self.Amplifiers[ampNumber].getTitle()) + "'")
-        if self.Amplifiers[ampNumber].getPlaybackStatus() == 1 and len(self.Amplifiers[ampNumber].getTitle()) == 0:
-            print("Title requested")
-            request = self.Amplifiers[ampNumber].requestTitle()
-            request = self.Amplifiers[ampNumber].requestArtist()
-            request = self.Amplifiers[ampNumber].requestAlbum()
-            request = self.Amplifiers[ampNumber].requestFeed()
+        self.Amplifiers[ampNumber].requestSystemState(ampNumber,_uart)
+        self.Amplifiers[ampNumber].requestPlaybackStatus(_uart)
 
-    
-        # request = self.Amplifiers[ampNumber].getInputSource(ampNumber,_uart)
-        # if request == None:
-        #     print ("Failed")
-        # request = self.Amplifiers[ampNumber].getVolume(ampNumber,_uart)
-        # if request == None:
-        #     print ("Failed")
-        # request = self.Amplifiers[ampNumber].requestVolume(ampNumber,_uart,40)
-        # if request == None:
-        #     print ("Failed")
-        # request = self.Amplifiers[ampNumber].getName(ampNumber,_uart)
-        # if request == None:
-        #     print ("Failed")
+        #Missing song info
+        if int(self.Amplifiers[ampNumber].getPlaybackStatus()) and len(self.Amplifiers[ampNumber].getTitle()) < 1:
+            self.Amplifiers[ampNumber].requestTitle(_uart)
+            self.Amplifiers[ampNumber].requestArtist(_uart)
+            self.Amplifiers[ampNumber].requestAlbum(_uart)
+            self.Amplifiers[ampNumber].requestFeed(_uart)
         
         self.Amplifiers[ampNumber].printAmp(ampNumber)
 
@@ -238,7 +221,7 @@ class Amp:
         self.setBass(_ampStatus[4])
         self.setNetwork(_ampStatus[5])
         self.setInternet(_ampStatus[6])
-        self.setPlaybackStatus(_ampStatus[7])
+        #self.setPlaybackStatus(_ampStatus[7])  # This doesn't appear to be what I think it is....
         self.setLED(_ampStatus[8])
         self.setUpgrading(_ampStatus[9])
 
@@ -330,9 +313,7 @@ class Amp:
         self.Treble = treble    
    
     def setPlaybackStatus(self,playstate):
-        "Toggle Play Pause"
-        # PLA;
-        # print("PLA")
+        "Set Playback State"
         self.PlayState = playstate
 
     def requestStop(self,ampNumber,_uart):
@@ -407,11 +388,12 @@ class Amp:
         # Returns {0,1}
         print("BTC")
     
-    def requestPlaybackStatus(self):
+    def requestPlaybackStatus(self,_uart):
         "Confirm current wifi playback status"
         # PLA;
         # Returns {0,1}
         #print("PLA")
+        return _uart.requestCommand(self.AmpNumber, "PLA;","Low",0.1)
 
     def getPlaybackStatus(self):
         return self.PlayState
@@ -1088,6 +1070,20 @@ class UART_Communication(UART_Multiplexer):
         # Count if more that one Response type in the buffer, look for the ':'
         ##bufferRequests = ure.sub("r|n\g","",self.ResponseBuffer[request])
 
+        self.ResponseBuffer[request]
+        _firstFound = -1
+        # Check if starts with control chars, and remove
+        for i in range(len(self.ResponseBuffer[request])):
+            m = ure.match('[A-Z]',self.ResponseBuffer[request][i])
+            if m and _firstFound < 0:
+                _firstFound = i
+        # print(str(_firstFound) + "@", end='')
+        # print("-" + str(self.ResponseBuffer[request]) + "-")
+        self.ResponseBuffer[request] = self.ResponseBuffer[request][_firstFound:]
+
+        #command = ure.compile('[A-Z][A-Z][A-Z]')
+        #print(command.search(buffer), end='')
+        #print(ure.match('S',buffer))
         bufferRequests = str(self.ResponseBuffer[request]).split(";")
         responseCount = len(bufferRequests)
         if responseCount < 1:
@@ -1096,12 +1092,14 @@ class UART_Communication(UART_Multiplexer):
         #print("\n+" + str(bufferRequests) + "+\n")
 
     ##### Need to handle when not receiving an unexpected brain dump
+    ##### NEED TO HANDLE WHEN RECIEVING DUMP, BUT CHOP OFF 3 CHARS BY MISTAKE
 
         for i in range(len(bufferRequests)):
-            if i > 0 or len(bufferRequests) > 1:
+            if i > 0 and len(bufferRequests) > 1:
                 bufferRequests[i] = bufferRequests[i][4:]
             else:
-                print("+",end='')
+                pass
+                #print("+",end='')
             
             # Loop through each
             #print(bufferRequests[i])
@@ -1111,7 +1109,7 @@ class UART_Communication(UART_Multiplexer):
             ##self.ResponseBuffer[request] = self.ResponseBuffer[request][4:]
 
             #print(" <" + str(self.ResponseBuffer[request]) + "> ")
-            print(requestType + "#{" + response + "} ",end='')
+            #print(requestType + "#{" + response + "} ",end='')
 
             ###### Status change
             if requestType == "STA":
@@ -1154,7 +1152,6 @@ class UART_Communication(UART_Multiplexer):
                 MA.Amplifiers[ampNumber].setFeed(response)
             ###### Playing information 
             elif requestType == "PLA":
-                print("PPPPLLLLLAAAAA")
                 MA.Amplifiers[ampNumber].setPlaybackStatus(response)
             ###### Amp Name 
             elif requestType == "NAM":
