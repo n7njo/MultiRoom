@@ -178,7 +178,7 @@ class Amp:
     "All the current status details about the Amp"
 
     def __init__(self) -> None:
-        self.Attributes = {}
+        self.Attributes = {}                                    # Master Dictionary for all settings
 
         self.Name = "default"
         self.SelectedSource = "LineIn"
