@@ -115,7 +115,7 @@ class MultiAmp:
             for ampNumber in range(Limit_UART_Multiplexer_Max_Channels):
                 UART_Com.setLiveChannel(ampNumber)
                 UART_Com.setMultiplexState("on")
-                ## Only needed because pulling from predefined list
+                ## Only needed because pulling from predefined list NOT LOOKING DOWN THE UART
                 if len(self.AmpsInstalled) > ampNumber:
                     AmpName = self.AmpsInstalled[ampNumber]
                     #print(str(ampNumber) + ":"+ AmpName)
@@ -154,7 +154,8 @@ class MultiAmp:
         # self.getSource(ampNumber,_uart) 
         # self.getVolume(ampNumber,_uart) 
         #print(responseTimestamp)
-        self.Amplifiers[ampNumber].requestSystemState(ampNumber,_uart)
+        self.Amplifiers[ampNumber].requestAmpState(ampNumber,_uart)
+        # Don't trust the general status to show correct play status
         self.Amplifiers[ampNumber].requestPlaybackStatus(_uart)
 
         #Missing song info
@@ -177,35 +178,68 @@ class Amp:
     "All the current status details about the Amp"
 
     def __init__(self) -> None:
+        self.Attributes = {}
+
         self.Name = "default"
         self.SelectedSource = "LineIn"
         self.AmpNumber = 0
         self.Volume = 1
-        self.Mute = 0
-        self.Treble = 0
-        self.Bass = 0
+        # self.Mute = 0
+        # self.Treble = 0
+        # self.Bass = 0
+        # self.VirtualBass = 0
         self.PlayState = 0
-        self.Audiable = "No"
-        self.OutputValue = 1                                # Validation there is output?
-        self.Title = ""
-        self.Artist = ""
-        self.Album = ""
-        self.TrackPosition = 0
-        self.Feed = ""
-        self.AvailableSources = []
-        self.MaxVolume = 10
-        self.LED = 0
-        self.Network = 0
-        self.Internet = 0
-        self.WWW = 0
-        self.Ethernet = 0
-        self.Upgrading = 0
+        # self.Audiable = "No"
+        # self.OutputEnabled = 1                                # Validation there is output?
+        # self.Title = ""
+        # self.Artist = ""
+        # self.Album = ""
+        # self.TrackPosition = 0
+        # self.Feed = ""
+        # self.LoopMode = ""
+        # self.AvailableSources = []
+        # self.MultiRoomStatus = ""
+        # self.AudioChannel = ""
+        # self.MaxVolume = 10
+        # self.LED = 0
+        # self.Beep = 0
+        # self.Network = 0
+        # self.Internet = 0
+        # self.WWW = 0
+        # self.Ethernet = 0
+        # self.Upgrading = 0
+        # self.SystemState = "_"
+        # self.Version = "_"
+        # self.Preset = ""
+        # self.VoicePrompt = 0
+        # self.SystemDelayTime = 0
+        # self.AutoSwitch = 0
+        # self.PowerOnSource = ""
+        
 
-    def requestSystemState(self,ampNumber,_uart):
+    def pushUART(self,_uart,_key,_value):
+        "Push value based on it's key"
+        return _uart.requestCommand(self.AmpNumber, _key + ":" + str(_value) + ";","High",0.1)
+        
+    def requestUART(self,_uart,_key):
+        "Request value base on Key"
+        return _uart.requestCommand(self.AmpNumber, _key + ";","Low",0.1)
+        
+    def saveAttribute(self,_key,_value):
+        self.Attributes={_key:_value}
+    
+    def readAttribute(self,_key):
+        return self.Attributes[_key]
+
+### STA Methods - AmpState
+    # def pushAmpState(self,uart):
+    #     "Does nothing"
+    #     pass
+
+    def requestAmpState(self,ampNumber,_uart):
         "Confirm status of amp"
         # STA: {source,mute,volume,treble,bass,net,internet,playing,led,upgrading};
         # Returns 
-        # print("STA")
         return _uart.requestCommand(ampNumber, "STA;","Low",0.1)
        
     def setStatus(self,status):
@@ -225,386 +259,855 @@ class Amp:
         self.setLED(_ampStatus[8])
         self.setUpgrading(_ampStatus[9])
 
-    def sendSystemControl(self):
-        "Send system command to the Amp"
-        # SYS: {REBOOT/STANDBY};
-        print("SYS")
+    # def getStatus(self):
+    #     "Does nothing"
+    #     pass
 
-    def getInternetState(self):
+### SYS Methods - SystemState
+    def pushSystemState(self,_state,_uart):
+        "Push system command to the Amp"
+        # SYS: {REBOOT/STANDBY/ON};
+        return _uart.requestCommand(self.AmpNumber, "SYS:" + str(_state) + ";","High",0.1)
+
+    def requestSystemState(self,_uart):
+        "Request system command from the Amp"
+        # SYS: {REBOOT/STANDBY};
+        return _uart.requestCommand(self.AmpNumber, "SYS;","Low",0.1)
+
+    def setSystemState(self,state):
+        "Set system state"
+        # SYS: {ON/STANDBY};
+        self.SystemState = state
+    
+    def getSystemState(self):
+        "Set system state"
+        # SYS: {ON/STANDBY};
+        return self.SystemState
+
+### VER Methods - Version
+    # def pushVersion(self,_uart):
+    #     "Does nothing"
+    #     pass
+
+    def requestVersion(self,_uart):
+        "Request software version from Amp"
+        # VER: <string>;
+        return _uart.requestCommand(self.AmpNumber, "VER;","Low",0.1)
+
+    def setVersion(self,version):
+        "Set Amp software version"
+        # VER: <string>;
+        self.Version = version
+    
+    def getVersion(self):
+        "Set Amp software version"
+        # VER: <string>;
+        return self.Version
+
+### WWW Methods - Internet
+    # def pushInternet(self,_uart):
+    #     "Does nothing"
+    #     pass
+
+    def requestInternet(self,_uart):
+        "Confirm current Internet state"
+        # WWW;
+        # Returns {0,1}
+        return _uart.requestCommand(self.AmpNumber, "WWW;","Low",0.1)
+
+    def setInternet(self,_www):
+        "Set Internet state"
+        # WWW: {0,1};
+        self.WWW = _www
+
+    def getInternet(self):
         "Confirm if connected to the internet"
         # WWW;
         # Returns {0,1}
-        print("WWW")
+        return self.WWW
 
-    def getAudioOutputState(self):
+### AUD Methods - OutputEnable
+    # def pushOutputEnable(self,_uart):
+    #     "Does nothing"
+    #     pass
+
+    def requestOutputEnable(self,_uart):
         "Confirm current audio output state"
         # AUD;
         # Returns {0,1}
-        print("AUD")
+        return _uart.requestCommand(self.AmpNumber, "AUD;","Low",0.1)
 
-    def setAudioOutputState(self):
+    def setOutputEnable(self,_outputEnable):
         "Set audio output state"
         # AUD: {0,1};
-        print("AUD")
+        self.OutputEnabled = _outputEnable
 
-    def getInputSource(self,ampNumber,_uart):
+    def getOutputEnable(self):
+        "Confirm current audio output state"
+        # AUD;
+        # Returns {0,1}
+        return self.OutputEnabled
+
+### SRC MEthods - InputSource
+    def pushInputSource(self,_uart,_source):
+        "Push Input Source to the Amp"
+        # SRC: {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI};
+        return _uart.requestCommand(self.AmpNumber, "SRC:" + str(_source) + ";","High",0.1)
+
+    def requestInputSource(self,_uart):
+        "Request Input Source from the Amp"
+        # SRC;
+        # Returns {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI}
+        return _uart.requestCommand(self.AmpNumber, "SRC;","Low",0.1)
+
+    def setInputSource(self,_source):
+        "Set current input source"
+        # SRC: {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI};
+        self.SelectedSource = _source
+
+    def getInputSource(self):
         "Confirm current input source"
         # SRC;
         # Returns {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI}
-        # print("SRC")
-        return _uart.requestCommand(ampNumber, "SRC;","Low",0.1)
+        return self.SelectedSource
 
-    def setInputSource(self,source):
-        "Set current input source"
-        # SRC: {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI};
-        # print("SRC")
-        self.SelectedSource = source
+### VOL Methods - Volume
+    def pushVolume(self,_uart,_volume):
+        "Confirm current volume"
+        # VOL: {0..100};
+        return _uart.requestCommand(self.AmpNumber, "VOL:" + str(_volume) + ";","High",0.1)
 
-    def getVolume(self,ampNumber,_uart):
+    def requestVolume(self,_uart):
+        "Confirm current volume"
+        # VOL: {0..100};
+        return _uart.requestCommand(self.AmpNumber, "VOL;","Low",0.1)
+
+    def setVolume(self,_volume):
+        "Set current volume"
+        self.Volume = _volume
+
+    def getVolume(self):
         "Confirm current volume"
         # VOL;
         # Returns {0..100}
-        # print("VOL")
-        return _uart.requestCommand(ampNumber, "VOL;","Low",0.1)
+        return self.Volume
+
+### MUT Methods - Mute
+    def pushMute(self,_uart,_mute):
+        "Confirm current mute"
+        # MUT: {0/1/T};
+        return _uart.requestCommand(self.AmpNumber, "MUT:" + str(_mute) + ";","High",0.1)
+
+    def requestMute(self,_uart):
+        "Confirm current mute"
+        # MUT: {0/1/T};
+        return _uart.requestCommand(self.AmpNumber, "MUT;","Low",0.1)
+     
+    def setMute(self,_mute):
+        "Set mute status"
+        # MUT: {0/1/T};
+        self.Mute = _mute    
    
-    def requestVolume(self,ampNumber,_uart,volume):
-        "Confirm current volume"
-        # VOL: {0..100};
-        # print("VOL")
-        return _uart.requestCommand(ampNumber, "VOL:" + str(volume) + ";","High",0.1)
-
-    def setVolume(self,volume):
-        self.Volume = volume
-
     def getMute(self):
         "Confirm current mute status"
         # MUT;
-        # Returns {0,1}
-        print("MUT")
+        # Returns {0/1/T}
+        return self.Mute
+
+# ### BAS Methods - Bass
+#     def pushBass(self,_uart,_bass):
+#         "Push new Bass"
+#         # BAS: {-10..10};
+#         return _uart.requestCommand(self.AmpNumber, "BAS:" + str(_bass) + ";","High",0.1)
+
+#     def requestBass(self,_uart):
+#         "Request current Bass"
+#         # BAS: {-10..10};
+#         return _uart.requestCommand(self.AmpNumber, "BAS;","Low",0.1)   
    
-    def setMute(self,mute):
-        "Set mute status"
-        # MUT: {0/1/T};
-        # print("MUT")
-        self.Mute = mute    
+#     def setBass(self,_bass):
+#         "Set Bass level"
+#         # BAS: {-10..10};
+#         self.Bass = _bass 
 
-    def getBass(self):
-        "Confirm current Bass level"
-        # BAS;
-        # Returns {-10..10}
-        print("BAS")
-   
-    def setBass(self,bass):
-        "Set Bass level"
-        # BAS: {-10..10};
-        # print("BAS") 
-        self.Bass = bass 
+#     def getBass(self):
+#         "Confirm current Bass level"
+#         # BAS;
+#         # Returns {-10..10}
+#         return self.Bass
 
-    def getTrebble(self):
-        "Confirm current Treble level"
-        # TRE;
-        # Returns {-10..10}
-        print("TRE")
-   
-    def setTreble(self, treble):
-        "Set Treble level"
-        # TRE: {-10..10};
-        #print("TRE")   
-        self.Treble = treble    
-   
-    def setPlaybackStatus(self,playstate):
-        "Set Playback State"
-        self.PlayState = playstate
+# ### TRE Methods - Treble
+#     def pushTreble(self,_uart,_treble):
+#         "Push new Treble"
+#         # TRE: {-10..10};
+#         return _uart.requestCommand(self.AmpNumber, "TRE:" + str(_treble) + ";","High",0.1)
 
-    def requestStop(self,ampNumber,_uart):
-        "Stop playing"
-        # STP;
-        #print("STP")
-        return _uart.requestCommand(ampNumber, "STP;","High",0.1)
-            
-    def requestNext(self,ampNumber,_uart):
-        "Skip to next track"
-        # NXT;
-        #print("NXT")
-        return _uart.requestCommand(ampNumber, "NXT;","High",0.1)
+#     def requestTreble(self,_uart):
+#         "Request current Treble"
+#         # TRE: {-10..10};
+#         return _uart.requestCommand(self.AmpNumber, "TRE;","Low",0.1) 
 
-    def requestPrevious(self,ampNumber,_uart):
-        "Jump to previous track"
-        # PRE;
-        #print("PRE")
-        return _uart.requestCommand(ampNumber, "PRE;","High",0.1)
+#     def setTreble(self, treble):
+#         "Set Treble level"
+#         # TRE: {-10..10};
+#         self.Treble = treble   
 
-    def requestPlayPause(self,ampNumber,_uart):
-        "Play or Pause current track"
-        # POP;
-        print("POP")
-        return _uart.requestCommand(ampNumber, "POP;","High",0.1)  
+#     def getTrebble(self):
+#         "Confirm current Treble level"
+#         # TRE;
+#         # Returns {-10..10}
+#         return self.Treble
 
-    def requestTitle(self,_uart):
-        "Request title infomation"
-        # TIT;
-        # print("TIT")
-        return _uart.requestCommand(self.AmpNumber, "TIT;","Low",0.1)
+# ### PLA Methods - PlaybackStatus
+#     def pushPlaybackStatus(self,_uart,_playstate):
+#         "Push current wifi playback status"
+#         # PLA;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "PLA:" + str(_playstate) + ";","Low",0.1)
 
-    def requestArtist(self,_uart):
-        "Request Artist infomation"
-        # ART;
-        # print("ART")
-        return _uart.requestCommand(self.AmpNumber, "ART;","Low",0.1)
-
-    def requestAlbum(self,_uart):
-        "Request Album infomation"
-        # ALB;
-        # print("ALB")
-        return _uart.requestCommand(self.AmpNumber, "ALB;","Low",0.1)
-
-    def requestFeed(self,_uart):
-        "Request Feed infomation"
-        # TIT;
-        # print("VND")
-        return _uart.requestCommand(self.AmpNumber, "VND;","Low",0.1)
-
-    def setTitle(self,title):
-        self.Title = title
-
-    def getTitle(self):
-        return self.Title
-
-    def setAlbum(self,album):
-        self.Album = album
-
-    def setArtist(self,artist):
-        self.Artist = artist
-
-    def setTrackPosition(self,trackposition):
-        self.TrackPosition = trackposition
-
-    def setFeed(self,feed):
-        self.Feed = feed
-
-    def getBluetoothStatus(self):
-        "Confirm current bluetooth connection status"
-        # BTC;
-        # Returns {0,1}
-        print("BTC")
-    
     def requestPlaybackStatus(self,_uart):
-        "Confirm current wifi playback status"
+        "Request current wifi playback status"
         # PLA;
         # Returns {0,1}
-        #print("PLA")
         return _uart.requestCommand(self.AmpNumber, "PLA;","Low",0.1)
 
+#     def setPlaybackStatus(self,playstate):
+#         "Set Playback State"
+#         # PLA;
+#         # Returns {0,1}
+#         self.PlayState = playstate
+
     def getPlaybackStatus(self):
+        "Get Playback State"
+        # PLA;
+        # Returns {0,1}
         return self.PlayState
+
+# ### STP Methods - Stop
+#     def requestStop(self,_uart):
+#         "Stop playing"
+#         # STP;
+#         #print("STP")
+#         return _uart.requestCommand(self.AmpNumber, "STP;","High",0.1)
+
+# ### NXT Methods - Next
+#     def requestNext(self,_uart):
+#         "Skip to next track"
+#         # NXT;
+#         #print("NXT")
+#         return _uart.requestCommand(self.AmpNumber, "NXT;","High",0.1)
+
+# ### PRE Methods - Previous
+#     def requestPrevious(self,_uart):
+#         "Jump to previous track"
+#         # PRE;
+#         return _uart.requestCommand(self.AmpNumber, "PRE;","High",0.1)
+
+# ### POP Methods - PlayPause
+#     def requestPlayPause(self,_uart):
+#         "Play or Pause current track"
+#         # POP;
+#         print("POP")
+#         return _uart.requestCommand(self.AmpNumber, "POP;","High",0.1)  
+
+# ### TIT Methods - Title
+#     # def pushTitle(self,_uart):
+#     #     "Do nothing"
+#     #     pass
+
+#     def requestTitle(self,_uart):
+#         "Request title infomation"
+#         # TIT;
+#         return _uart.requestCommand(self.AmpNumber, "TIT;","Low",0.1)
+
+#     def setTitle(self,title):
+#         "Set title"
+#         self.Title = title
+
+#     def getTitle(self):
+#         "Get Title"
+#         return self.Title
+
+# ### ART Methods - Artist
+
+#     # def pushArtist(self,_uart):
+#     #     "Do nothing"
+#     #     pass
+
+#     def requestArtist(self,_uart):
+#         "Request Artist infomation"
+#         # ART;
+#         # Returns <string>
+#         return _uart.requestCommand(self.AmpNumber, "ART;","Low",0.1)
+
+#     def setArtist(self,_artist):
+#         "Set title"
+#         # ART:<string>;
+#         self.Title = _artist
+
+#     def getArtist(self):
+#         "Get Artist"
+#         return self.Artist
+
+# ### ALB Methods - Album
+#     # def pushAlbum(self,_uart,_album):
+#     #     "Do Nothing"
+#     #     pass
+
+#     def requestAlbum(self,_uart):
+#         "Request Album infomation"
+#         # ALB;
+#         # print("ALB")
+#         return _uart.requestCommand(self.AmpNumber, "ALB;","Low",0.1)
+
+#     def setAlbum(self,_album):
+#         "Set album"
+#         self.Album = _album
+
+#     def getAlbum(self):
+#         "Get Artist"
+#         return self.Album
+
+# ### VND Methods - Feed
+#     # def pushFeed(self,_uart,_album):
+#     #     "Do Nothing"
+#     #     pass
+
+#     def requestFeed(self,_uart):
+#         "Request Feed infomation"
+#         # VND;
+#         return _uart.requestCommand(self.AmpNumber, "VND;","Low",0.1)
+
+#     def setFeed(self,feed):
+#         self.Feed = feed
+
+#     def getFeed(self):
+#         "Get Feed"
+#         return self.Feed
+
+# ### ELP Methods - TrackPosition
+#     def pushTrackPosition(self,_trackposition,_uart):
+#         "Push new track position"
+#         # EPS;
+#         return _uart.requestCommand(self.AmpNumber, "ELP:" + str(_trackposition) + ";","High",0.1)
+
+#     def requestTrackPosition(self,_uart):
+#         "Request current Track Position"
+#         # BAS: {-10..10};
+#         return _uart.requestCommand(self.AmpNumber, "ELP;","Low",0.1)   
+
+#     def setTrackPosition(self,_trackposition):
+#         "Set Track position"
+#         self.TrackPosition = _trackposition
+
+#     def getTrackPosition(self):
+#         "Get current Track Position"
+#         return self.TrackPosition
+
+# ### BTC Methods - Bluetoothstatus
+#     # def pushBluetoothStatus(self,_uart):
+#     #     "Do Nothing"
+#     #     pass
+
+#     def requestBluetoothStatus(self,_uart):
+#         "Request current Track Position"
+#         # BTC: {};
+#         return _uart.requestCommand(self.AmpNumber, "BTC;","Low",0.1)   
+
+#     def setBluetoothStatus(self,_bluetoothState):
+#         "Set bluetooth connection status"
+#         self.BluetoothState = _bluetoothState
+        
+#     def getBluetoothStatus(self):
+#         "Confirm current bluetooth connection status"
+#         # BTC;
+#         # Returns {}
+#         return self.BluetoothState
     
-    def getChannelStatus(self):
-        "Confirm current channel status"
-        # CHN;
-        # Returns {0,1}
-        print("CHN")
-
-    def getMultiRoomStatus(self):
-        "Confirm current multiroom status"
-        # MRM;
-        # Returns {S,M,N}
-        # Slave / Master / None
-        print("MRM")
-
-    def getLED(self):
-        "Confirm current LED status"
-        # LED;
-        # Returns {0,1}
-        print("LED")
-   
-    def setLED(self,led):
-        "Set LED status"
-        # LED: {0/1/T};
-        # print("LED") 
-        self.LED = led   
-
-    def getBeepSound(self):
-        "Confirm current BEP status"
-        # BEP;
-        # Returns {0,1}
-        print("BEP")
-   
-    def setBeepSound(self):
-        "Set BEP status"
-        # BEP: {0/1};
-        print("BEP") 
-
-    def getPreset(self):
-        "Confirm current PST status"
-        # PST;
-        # Returns {0..10}
-        print("PST")
-   
-    def setPreset(self):
-        "Set PST status"
-        # PST: {0..10};
-        print("PST") 
-
-    def getVirtualBass(self):
-        "Confirm current Virtual Bass status"
-        # VBS;
-        # Returns {0,1}
-        print("VBS")
-   
-    def setVirtualBass(self):
-        "Set VBS status"
-        # VBS: {0/1/T};
-        print("VBS")
-
-    def sendWifiReset(self):
-        "Send wifi reset to the Amp"
-        # WRS;
-        print("WRS")
-
-    def getLoopMode(self):
-        "Confirm current Loop mode status"
-        # LPM;
-        # Returns {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE}
-        print("LPM")
-
-    def setLoopMode(self):
-        "Set current input source"
-        # LPM: {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE};
-        print("LPM")
-
-    def getName(self,ampNumber,_uart,):
-        "Confirm current Name status"
-        # NAM;
-        # Returns {Name}
-        # hexed string with UTF8 encoding
-        # print("NAM")
-        return _uart.requestCommand(ampNumber, "NAM;","Low",0)
-   
-    def setName(self,name):
-        "Set Name"
-        pass
-        # NAM: {Name};
-        # hexed string with UTF8 encoding
-        # print("NAM")
-        # print(ubinascii.unhexlify(name))
-        #self.Name = ubinascii.unhexlify(name)
-
-    def getEthernet(self):
-        "Confirm current Ethernet status"
-        # ETH;
-        # Returns {0,1}
-        print("ETH")
-
-    def getWifi(self):
-        "Confirm current Wifi status"
-        # WIF;
-        # Returns {0,1}
-        print("WIF")
-
-    def getVoicePrompt(self):
-        "Confirm current Voice prompt status"
-        # PMT;
-        # Returns {0,1}
-        print("NAM")
-   
-    def setVoicePrompt(self):
-        "Set voice prompt status"
-        # PMT: {0,1};
-        print("PMT")
-
-    def getPreGain(self):
-        "Confirm current PreGain status"
-        # PRG;
-        # Returns {0,1}
-        print("PRG")
-   
-    def setPreGain(self):
-        "Set PreGain status"
-        # PRG: {0,1};
-        print("PRG")
-
-    def getSystemDelayTime(self):
-        "Confirm current delay time until system output control"
-        # DLY;
-        # Returns {1..60}
-        # Mute delay
-        print("DLY")
-   
-    def setSystemDelayTime(self):
-        "Set system delay time until system output control"
-        # DLY: {1..60};
-        # Mute delay
-        print("DLY")
-
-    def getMaxVolume(self):
-        "Confirm current max volume"
-        # MXV;
-        # Returns {30..100}
-        print("VOL")
-   
-    def setMaxVolume(self):
-        "Confirm current volume"
-        # MXV: {30..100};
-        # remains after factory reset
-        print("MXV")
-
-    def getAutoSwitch(self):
-        "Confirm current auto switch status"
-        # ASW;
-        # Returns {0,1}
-        print("ASW")
-   
-    def setAutoSwitch(self):
-        "Set voice prompt status"
-        # ASW: {0,1};
-        # Reverts to previous source after playback stopped
-        print("ASW")
-   
-    def setPowerOnSource(self):
-        "Set default source after power on"
-        # POM: {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI};
-        # Reverts to previous source after playback stopped
-        # Set NONE for last used
-        print("POM")
-
-    def sendZoneMessage(self):
-        "Send message to different zone"
-        # ZON:[zone]:[msg];
-        print("ZON")
-
-    def setNetwork(self,network):
-        self.Network = network
+# ### CHN Methods - AudioChannel
     
-    def setInternet(self,internet):
-        self.Internet = internet
+#     def pushAudioChannel(self,_audiochannel,_uart):
+#         "Push new audio channel status"
+#         # CHN: {L/R/S};
+#         return _uart.requestCommand(self.AmpNumber, "CHN:" + str(_audiochannel) + ";","High",0.1)
+    
+#     def requestAudioChannel(self,_uart):
+#         "Request current audio channel status"
+#         # CHN: 
+#         # Returns {L/R/S};
+#         return _uart.requestCommand(self.AmpNumber, "CHN;","Low",0.1)   
 
-    def setUpgrading(self,upgrading):
-        self.Upgrading = upgrading
+#     def setAudioChannel(self,_audiochannel):
+#         "Set audio channel status"
+#         # CHN: 
+#         # Returns {L/R/S}; 
+#         self.AudioChannel = _audiochannel
 
-    def printAmp(self,ampNumber):
-        print("----- Amp: " + self.Name + "  |  Ch: " + str(ampNumber) + " --------------------")
+#     def getAudioChannel(self):
+#         "Confirm current audio channel status"
+#         # CHN;
+#         # Returns {L/R/S}
+#         return self.AudioChannel
+
+# ### MRM Methods - MultiRoomStatus
+    
+#     def pushMultiRoomStatus(self,_multiroomstatus,_uart):
+#         "Push new mutliroom status"
+#         # MRM: {S,M,N};
+#         # Slave / Master / None
+#         return _uart.requestCommand(self.AmpNumber, "MRM:" + str(_multiroomstatus) + ";","High",0.1)
+    
+#     def requestMultiRoomStatus(self,_uart):
+#         "Request current mutliroom status"
+#         # MRM;
+#         # Returns {S,M,N}
+#         # Slave / Master / None
+#         return _uart.requestCommand(self.AmpNumber, "MRM;","Low",0.1)   
+
+#     def setMultiRoomStatus(self,_multiroomstatus):
+#         "Set mutliroom status"
+#         # MRM;
+#         # Returns {S,M,N}
+#         # Slave / Master / None
+#         self.MultiRoomStatus = _multiroomstatus
+
+#     def getMultiRoomStatus(self):
+#         "Confirm current mutliroom status"
+#         # MRM;
+#         # Returns {S,M,N}
+#         # Slave / Master / None
+#         return self.MultiRoomStatus
+
+# ### LED Methods - LED
+#     def pushLED(self,_uart):
+#         "Do Nothing"
+#         pass
+
+#     def requestLED(self,_uart):
+#         "Request current LED"
+#         # BTC: {};
+#         return _uart.requestCommand(self.AmpNumber, "LED;","Low",0.1)  
+
+#     def setLED(self,_led):
+#         "Set LED status"
+#         # LED: {0/1/T};
+#         self.LED = _led   
+
+#     def getLED(self):
+#         "Confirm current LED status"
+#         # LED;
+#         # Returns {0,1}
+#         return self.LED
+
+# ### BEP Methods - BeepSound
+
+#     def pushBeepSound(self,_beep,_uart):
+#         "Push new Beep status"
+#         # BEP: {0/1};
+#         return _uart.requestCommand(self.AmpNumber, "BEP:" + str(_beep) + ";","High",0.1)
+    
+#     def requestBeepSound(self,_uart):
+#         "Request current Beep status"
+#         # BEP: {0/1};
+#         return _uart.requestCommand(self.AmpNumber, "BEP;","Low",0.1)   
+
+#     def setBeepSound(self,_beep):
+#         "Set Beep status"
+#         # BEP: {0/1};
+#         self.Beep = _beep
+
+#     def getBeepSound(self):
+#         "Confirm current Beep status"
+#         # BEP;
+#         # Returns {0,1}
+#         return self.Beep
+
+# ### PST Methods - Preset
+#     def pushPreset(self,_preset,_uart):
+#         "Push new Preset "
+#         # PST: {0..10};
+#         return _uart.requestCommand(self.AmpNumber, "PST:" + str(_preset) + ";","High",0.1)
+    
+#     def requestPreset(self,_uart):
+#         "Request current Preset"
+#         # PST: {0..10};
+#         return _uart.requestCommand(self.AmpNumber, "PST;","Low",0.1)   
+
+#     def setPreset(self,_preset):
+#         "Set Preset "
+#         # PST: {0..10};
+#         self.Preset = _preset
+
+#     def getPreset(self):
+#         "Confirm Preset"
+#         # PST;
+#         # Returns {0..10}
+#         return self.Preset
+
+# ### VBS Methods - VirtualBass
+#     def pushVirtualBass(self,_virtualBass,_uart):
+#         "Push new Virtual Bass "
+#         # VBS: {0,1};
+#         return _uart.requestCommand(self.AmpNumber, "VBS:" + str(_virtualBass) + ";","High",0.1)
+    
+#     def requestVirtualBass(self,_uart):
+#         "Request current Virtual Bass"
+#         # VBS;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "VBS;","Low",0.1)   
+   
+#     def setVirtualBass(self,_virtualBass):
+#         "Set Virtual Bass status"
+#         # VBS: {0/1};
+#         self.VirtualBass = _virtualBass
+
+#     def getVirtualBass(self):
+#         "Confirm current Virtual Bass status"
+#         # VBS;
+#         # Returns {0,1}
+#         return self.VirtualBass
+
+# ### WRS Methods - WifiReset
+#     def pushWifiReset(self,_wifireset,_uart):
+#         "Push new Virtual Bass "
+#         # WRS: {0,1};
+#         return _uart.requestCommand(self.AmpNumber, "WRS:" + str(_wifireset) + ";","High",0.1)
+    
+#     # def requestWifiReset(self,_uart):
+#     #     "Do nothing"
+#     #     pass   
+   
+#     # def setWifiReset(self):
+#     #     "Do nothing"
+#     #     pass
+
+#     # def getWifiReset(self,):
+#     #     "Do nothing"
+#     #     pass
+
+# ### LPM Methods - LoopMode
+#     def pushLoopMode(self,_loopmode,_uart):
+#         "Push Loop mode status"
+#         # LPM: {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE};
+#         return _uart.requestCommand(self.AmpNumber, "LPM:" + str(_loopmode) + ";","High",0.1)
+    
+#     def requestLoopMode(self,_uart):
+#         "Request current Loop mode"
+#         # LPM;
+#         # Returns {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE}
+#         return _uart.requestCommand(self.AmpNumber, "LPM;","Low",0.1)   
+   
+#     def setLoopMode(self,_loopmode):
+#         "Set Loop Mode"
+#         # LPM: {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE};
+#         self.LoopMode = _loopmode
+
+#     def getLoopMode(self):
+#         "Confirm current Loop Mode"
+#         # LPM;
+#         # Returns {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE}
+#         return self.LoopMode
+
+# ### NAM Methods - Name
+#     def pushName(self,_name,_uart):
+#         "Push Amp Name"
+#         # NAM: <HEX string>;
+#         # hexed string with UTF8 encoding
+#         # print("NAM")
+#         # print(ubinascii.unhexlify(name))
+#         #self.Name = ubinascii.unhexlify(name)
+#         return _uart.requestCommand(self.AmpNumber, "NAM:" + str(_name) + ";","High",0.1)
+    
+#     def requestName(self,_uart):
+#         "Request current Amp Name"
+#         # NAM;
+#         # Returns <HEX string>
+#         return _uart.requestCommand(self.AmpNumber, "NAM;","Low",0.1)   
+   
+#     def setName(self,_name):
+#         "Set Amp Name"
+#         # NAM: <string>;
+#         self.Name = _name
+
+#     def getName(self):
+#         "Confirm Amp Name"
+#         # NAM;
+#         # Returns <string>
+#         return self.Name
+
+# ### ETH Methods - Ethernet
+#     # def pushEthernet(self):
+#     #     "Do nothing"
+#     #     pass
+
+#     def requestEthernet(self,_uart):
+#         "Request current Ethernet status"
+#         # ETH;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "ETH;","Low",0.1) 
+
+#     def setEthernet(self,_ethernet):
+#         "Set Ethernet status"
+#         # ETH: {0,1};
+#         self.Ethernet = _ethernet
+
+#     def getEthernet(self):
+#         "Get current Ethernet status"
+#         # ETH;
+#         # Returns {0,1}
+#         return self.Ethernet
+
+# ### WIF Methods - Wifi
+#     # def pushWifi(self):
+#     #     "Do nothing"
+#     #     pass
+
+#     def requestWifi(self,_uart):
+#         "Request current Wifi status"
+#         # WIF;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "WIF;","Low",0.1) 
+
+#     def setWifi(self,_wifi):
+#         "Set current Wifi status"
+#         # WIF: {0,1};
+#         self.Wifi = _wifi
+
+#     def getWifi(self):
+#         "Get current Wifi status"
+#         # WIF;
+#         # Returns {0,1}
+#         return self.Wifi
+
+# ### PMT Methods - VoicePrompt
+#     def pushVoicePrompt(self,_voicePrompt,_uart):
+#         "Push Voice Prompt status"
+#         # PMT: {0,1};
+#         return _uart.requestCommand(self.AmpNumber, "PMT:" + str(_voicePrompt) + ";","High",0.1)
+    
+#     def requestVoicePrompt(self,_uart):
+#         "Confirm current Voice prompt status"
+#         # PMT;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "PMT;","Low",0.1)   
+   
+#     def setVoicePrompt(self,_voicePrompt):
+#         "Set Voice prompt status"
+#         # PMT: {0,1};
+#         self.VoicePrompt = _voicePrompt
+
+#     def getVoicePrompt(self):
+#         "Confirm current Voice prompt status"
+#         # PMT;
+#         # Returns {0,1}
+#         return self.VoicePrompt
+
+# ### PRG Methods - PreGain
+#     def pushPreGain(self,_pregain,_uart):
+#         "Push PreGain status"
+#         # PRG: {0,1};
+#         return _uart.requestCommand(self.AmpNumber, "PRG:" + str(_pregain) + ";","High",0.1)
+    
+#     def requestPreGain(self,_uart):
+#         "Confirm current PreGain status"
+#         # PRG;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "PRG;","Low",0.1)   
+   
+#     def setPreGain(self,_pregain):
+#         "Set PreGain status"
+#         # PRG: {0,1};
+#         self.PreGain = _pregain
+
+#     def getPreGain(self):
+#         "Confirm current PreGain status"
+#         # PRG;
+#         # Returns {0,1}
+#         return self.PreGain
+
+# ### DLY Methods - SystemDelayTime
+#     def pushSystemDelayTime(self,_systemdelaytime,_uart):
+#         "Push System Delay Time status"
+#         # DLY: {0,1};
+#         return _uart.requestCommand(self.AmpNumber, "DLY:" + str(_systemdelaytime) + ";","High",0.1)
+    
+#     def requestSystemDelayTime(self,_uart):
+#         "Confirm current System Delay Time status"
+#         # DLY;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "DLY;","Low",0.1)   
+   
+#     def setSystemDelayTime(self,_systemdelaytime):
+#         "Set System Delay Time status"
+#         # DLY: {0,1};
+#         self.SystemDelayTime = _systemdelaytime
+
+#     def getSystemDelayTime(self):
+#         "Confirm current System Delay Time status"
+#         # DLY;
+#         # Returns {0,1}
+#         return self.SystemDelayTime
+
+# ### MXV Methods - MaxVolume
+#     def pushMaxVolume(self,_maxVolume,_uart):
+#         "Push Max Volume"
+#         # MXV: {0,1};
+#         return _uart.requestCommand(self.AmpNumber, "MXV:" + str(_maxVolume) + ";","High",0.1)
+    
+#     def requestMaxVolume(self,_uart):
+#         "Confirm current Max Volume"
+#         # MXV;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "MXV;","Low",0.1)   
+   
+#     def setMaxVolume(self,_maxVolume):
+#         "Set Max Volume"
+#         # MXV: {0,1};
+#         self.MaxVolume = _maxVolume
+
+#     def getMaxVolume(self):
+#         "Confirm current Max Volume"
+#         # MXV;
+#         # Returns {0,1}
+#         return self.MaxVolume
+
+# ### ASW Methods - AutoSwitch
+#     def pushAutoSwitch(self,_autoswitch,_uart):
+#         "Push AutoSwitch"
+#         # ASW: {0,1};
+#         # Reverts to previous source after playback stopped
+#         return _uart.requestCommand(self.AmpNumber, "ASW:" + str(_autoswitch) + ";","High",0.1)
+    
+#     def requestAutoSwitch(self,_uart):
+#         "Confirm current AutoSwitch"
+#         # ASW;
+#         # Returns {0,1}
+#         return _uart.requestCommand(self.AmpNumber, "ASW;","Low",0.1)   
+   
+#     def setAutoSwitch(self,_autoswitch):
+#         "Set AutoSwitch"
+#         # ASW: {0,1};
+#         self.AutoSwitch = _autoswitch
+
+#     def getAutoSwitch(self):
+#         "Confirm current AutoSwitch"
+#         # ASW;
+#         # Returns {0,1}
+#         return self.AutoSwitch
+   
+# ### POM Methods - PowerOnSource
+#     def pushPowerOnSource(self,_poweronsource,_uart):
+#         "Push Set default source after power on"
+#         # POM: {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI};
+#         # Reverts to previous source after playback stopped
+#         # Set NONE for last used
+#         return _uart.requestCommand(self.AmpNumber, "POM:" + str(_poweronsource) + ";","High",0.1)
+    
+#     def requestPowerOnSource(self,_uart):
+#         "Confirm current Power on Source"
+#         # POM;
+#         # Returns {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI}
+#         return _uart.requestCommand(self.AmpNumber, "POM;","Low",0.1)   
+   
+#     def setPowerOnSource(self,_poweronsource):
+#         "Set Power on Source"
+#         # POM: {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI};
+#         self.PowerOnSource = _poweronsource
+
+#     def getPowerOnSource(self):
+#         "Confirm current Power on Source"
+#         # POM;
+#         # Returns {NET/USB/USBDAC/LINE-IN/LINE-IN2/BT/OPT/COAX/I2S/HDMI}
+#         return self.PowerOnSource
+
+# ### ZON Methods - ZoneMessage
+
+#     def pushZoneMessage(self,_zonemessage,_uart):
+#         "Send message to different zone"
+#         # ZON:[zone]:[msg];
+#         return _uart.requestCommand(self.AmpNumber, "ZON:" + str(_zonemessage) + ";","High",0.1)
+    
+#     # def requestZoneMessage(self,_uart):
+#     #     "Do nothing"
+#     #     pass  
+   
+#     # def setZoneMessage(self,_poweronsource):
+#     #     "Do nothing"
+#     #     pass  
+
+#     # def getZoneMessage(self):
+#     #     "Do nothing"
+#     #     pass  
+
+# ### NET Methods - Network
+#     # def pushNetwork(self,_uart):
+#     #     "Do nothing"
+#     #     pass  
+    
+#     # def requestNetwork(self,_uart):
+#     #     "Do nothing"
+#     #     pass  
+
+#     def setNetwork(self,_network):
+#         "Set network"
+#         self.Network = _network
+
+#     def getNetwork(self,):
+#         "Return network"
+#         return self.Network
+    
+# ### Upgrade Methods
+#     # def pushUpgrading(self,_uart):
+#     #     "Do nothing"
+#     #     pass  
+    
+#     # def requestUpgrading(self,_uart):
+#     #     "Do nothing"
+#     #     pass  
+
+#     def setUpgrading(self,_upgrading):
+#         "Set upgrading status"
+#         self.Upgrading = _upgrading
+
+#     def getUpgrading(self,):
+#         "Return upgrading status"
+#         return self.Upgrading
+
+### Print Methods
+    def printAmp(self,ampNumber): #remove ampNumber var if not needed now
+        print("----- Amp: " + self.Name + "  |  Amp#: " + str(self.AmpNumber) + "  |  Ver: " + str(self.Version) + "  |  Sys: " + str(self.SystemState) + " -------")
         print("Source: " + self.SelectedSource, end='  |  ')
         print("Available: " + str(self.AvailableSources), end='  |  ')
         print("Mute: " + str(self.Mute),end='  |  ')
         print("Volume: " + str(self.Volume),end='  |  ')
         print("MaxVolume: " + str(self.MaxVolume), end='  |  ')
         print("Treble: " + str(self.Treble),end='  |  ')
-        print("Bass: " + str(self.Bass))
+        print("Bass: " + str(self.Bass),end='  |  ')
+        print("Virtual Bass: " + str(self.VirtualBass))
         print("PlayState: " + str(self.PlayState), end='  |  ')
-        print("TrackPosition: " + str(self.TrackPosition), end='  |  ')
+        print("LED: " + str(self.LED), end='  |  ')
+        print("Loopmode: " + str(self.LoopMode), end='  |  ')
         print("LED: " + str(self.LED), end='  |  ')
         print("Audiable:" + self.Audiable, end='  |  ')
-        print("Output value:" + str(self.OutputValue), end='  |  ')
+        print("AudioChannel:" + self.AudioChannel, end='  |  ')
+        print("Output Enabled:" + str(self.OutputEnabled))
+        print("Beep:" + str(self.Beep))
+        print("Upgrading:" + str(self.Upgrading), end='  |  ')
         print("Network:" + str(self.Network), end='  |  ')      # Maybe same as Ethernet
         print("Ethernet:" + str(self.Ethernet), end='  |  ')
         print("Internet:" + str(self.Internet), end='  |  ')    # Maybe same as WWW
-        print("WWW:" + str(self.WWW))
+        print("WWW:" + str(self.WWW), end='  |  ')
+        print("MultiRoom Status:" + str(self.MultiRoomStatus))
+        print("Voice Prompt:" + str(self.VoicePrompt), end='  |  ')
+        print("System Delay Time:" + str(self.SystemDelayTime), end='  |  ')
+        print("Auto Switch:" + str(self.AutoSwitch), end='  |  ')
+        print("Power On Source:" + str(self.PowerOnSource), end='  |  ')
+        print("Preset:" + str(self.Preset))
         print("Feed: " + self.Feed, end='  |  ')
         print("Title: " + self.Title, end='  |  ')
         print("Artist: " + self.Artist, end='  |  ')
         print("Album: " + self.Album)
         print("----------------------------------------------")
-
 
 # Button status
 class Button:
@@ -864,7 +1367,6 @@ class UART_Communication(UART_Multiplexer):
         #     response = self.uart.read()
 
         # print("[" + str(self.uart.read()),end=']')
-        
         return str(response)[2:][:-6]
 
     def removeFromQueue(self,request):
@@ -936,7 +1438,6 @@ class UART_Communication(UART_Multiplexer):
 
     def requestCommand(self,ampNumber:int,message="",priority="low",wait=1):
         "Requests an API message to the UART to a particular Amp"
-        
         global Flag_System_RedLine
 
         # How many times has back presure been applied, if too high lower soft limit
@@ -1012,7 +1513,7 @@ class UART_Communication(UART_Multiplexer):
                     pass
                 return False
         else:
-            print("Bad ampNumber")
+            print("Bad amp number")
             return False
 
     def pruneQueue(self):
@@ -1109,7 +1610,7 @@ class UART_Communication(UART_Multiplexer):
             ##self.ResponseBuffer[request] = self.ResponseBuffer[request][4:]
 
             #print(" <" + str(self.ResponseBuffer[request]) + "> ")
-            #print(requestType + "#{" + response + "} ",end='')
+            print(requestType + "#{" + response + "} ",end='')
 
             ###### Status change
             if requestType == "STA":
@@ -1156,6 +1657,83 @@ class UART_Communication(UART_Multiplexer):
             ###### Amp Name 
             elif requestType == "NAM":
                 MA.Amplifiers[ampNumber].setName(response)
+            ###### System status 
+            elif requestType == "SYS":
+                MA.Amplifiers[ampNumber].setSystemState(response)
+            ###### Amp Version 
+            elif requestType == "VER":
+                MA.Amplifiers[ampNumber].setVersion(response)
+            ###### Amp Version 
+            elif requestType == "WWW":
+                MA.Amplifiers[ampNumber].setWWW(response)
+            ###### Amp Version 
+            elif requestType == "AUD":
+                MA.Amplifiers[ampNumber].setOutputEnable(response)
+            ###### Amp Version 
+            elif requestType == "BAS":
+                MA.Amplifiers[ampNumber].setBass(response)
+            ###### Amp Version 
+            elif requestType == "TRE":
+                MA.Amplifiers[ampNumber].setTreble(response)
+            ###### Amp Version 
+            elif requestType == "BTC":
+                MA.Amplifiers[ampNumber].setBluetoothStatus(response)
+            ###### Amp Version 
+            elif requestType == "CHN":
+                MA.Amplifiers[ampNumber].setAudioChannel(response)
+            ###### Amp Version 
+            elif requestType == "MRM":
+                MA.Amplifiers[ampNumber].setMultiRoomStatus(response)
+            ###### Amp Version 
+            elif requestType == "LED":
+                MA.Amplifiers[ampNumber].setLED(response)
+            ###### Amp Version 
+            elif requestType == "BEP":
+                MA.Amplifiers[ampNumber].setBeepSound(response)
+            ###### Amp Version 
+            elif requestType == "PST":
+                MA.Amplifiers[ampNumber].setPreset(response)
+            ###### Amp Version 
+            elif requestType == "VBS":
+                MA.Amplifiers[ampNumber].setVirtualBass(response)
+            ###### Amp Version 
+            elif requestType == "WRS":
+                MA.Amplifiers[ampNumber].setWifiReset(response)
+            ###### Amp Version 
+            elif requestType == "LPM":
+                MA.Amplifiers[ampNumber].setLoopMode(response)
+            ###### Amp Version 
+            elif requestType == "ETH":
+                MA.Amplifiers[ampNumber].setEthernet(response)
+            ###### Amp Version 
+            elif requestType == "WIF":
+                MA.Amplifiers[ampNumber].setWifi(response)
+            ###### Amp Version 
+            elif requestType == "PMT":
+                MA.Amplifiers[ampNumber].setVoicePrompt(response)
+            ###### Amp Version 
+            elif requestType == "PRG":
+                MA.Amplifiers[ampNumber].setPreGain(response)
+            ###### Amp Version 
+            elif requestType == "DLY":
+                MA.Amplifiers[ampNumber].setSystemDelayTime(response)
+            ###### Amp Version 
+            elif requestType == "MXV":
+                MA.Amplifiers[ampNumber].setMaxVolume(response)
+            ###### Amp Version 
+            elif requestType == "ASW":
+                MA.Amplifiers[ampNumber].setAutoSwitch(response)
+            ###### Amp Version 
+            elif requestType == "POM":
+                MA.Amplifiers[ampNumber].setPowerOnMode(response)
+            ###### Amp Version 
+            elif requestType == "ZON":
+                MA.Amplifiers[ampNumber].setZoneMessage(response)
+            ###### Amp Version 
+            elif requestType == "NET":
+                MA.Amplifiers[ampNumber].setNetwork(response)
+
+        print()
 
 ### Function to detect button press
 # Interupt if any button depressed (VNR,Eject,Stop,Play/Pause/Forward/Rewind)
