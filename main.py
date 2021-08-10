@@ -154,18 +154,40 @@ class MultiAmp:
         # self.getSource(ampNumber,_uart) 
         # self.getVolume(ampNumber,_uart) 
         #print(responseTimestamp)
-        self.Amplifiers[ampNumber].requestAmpState(ampNumber,_uart)
+        #####self.Amplifiers[ampNumber].requestAmpState(ampNumber,_uart)
+        # self.Amplifiers[ampNumber].requestUART(_uart,"STA")
+        # _ampStatusString = self.Amplifiers[ampNumber].readAttribute("STA")
+        # # STA: {source,mute,volume,treble,bass,net,internet,playing,led,upgrading};
+        # if _ampStatusString:
+        #     print("STA attrib :" + _ampStatusString)
+        #     self.Amplifiers[ampNumber].saveAttribute("SRC",_ampStatusString.split(",")[0])
+        #     self.Amplifiers[ampNumber].saveAttribute("MUT",_ampStatusString.split(",")[1])
+        #     self.Amplifiers[ampNumber].saveAttribute("VOL",_ampStatusString.split(",")[2])
+        #     self.Amplifiers[ampNumber].saveAttribute("TRE",_ampStatusString.split(",")[3])
+        #     self.Amplifiers[ampNumber].saveAttribute("BAS",_ampStatusString.split(",")[4])
+        #     self.Amplifiers[ampNumber].saveAttribute("NET",_ampStatusString.split(",")[5])
         # Don't trust the general status to show correct play status
-        self.Amplifiers[ampNumber].requestPlaybackStatus(_uart)
+        #### self.Amplifiers[ampNumber].requestPlaybackStatus(_uart)
 
-        #Missing song info
-        if int(self.Amplifiers[ampNumber].getPlaybackStatus()) and len(self.Amplifiers[ampNumber].getTitle()) < 1:
-            self.Amplifiers[ampNumber].requestTitle(_uart)
-            self.Amplifiers[ampNumber].requestArtist(_uart)
-            self.Amplifiers[ampNumber].requestAlbum(_uart)
-            self.Amplifiers[ampNumber].requestFeed(_uart)
+        # Send blank request - to look for UARt in the buffer
+        self.Amplifiers[ampNumber].requestUART(_uart,"")
+
+        # Unknown Play state
+        if self.Amplifiers[ampNumber].readAttribute("PLA") == None:
+            self.Amplifiers[ampNumber].requestUART(_uart,"PLA")
+
+        # Unknown Volume
+        if self.Amplifiers[ampNumber].readAttribute("VOL") == None:
+            self.Amplifiers[ampNumber].requestUART(_uart,"VOL")
+
+        # Missing song info
+        if self.Amplifiers[ampNumber].readAttribute("TIT") == None:
+             self.Amplifiers[ampNumber].requestUART(_uart,"TIT")
+             self.Amplifiers[ampNumber].requestUART(_uart,"ART")
+             self.Amplifiers[ampNumber].requestUART(_uart,"ALB")
+             self.Amplifiers[ampNumber].requestUART(_uart,"VND")
         
-        self.Amplifiers[ampNumber].printAmp(ampNumber)
+        self.Amplifiers[ampNumber].printAmp()
 
     def refreshAllAmpStatus(self,_uart):
         "Update all amplifier statuses"
@@ -188,7 +210,7 @@ class Amp:
         # self.Treble = 0
         # self.Bass = 0
         # self.VirtualBass = 0
-        self.PlayState = 0
+        #self.PlayState = 0
         # self.Audiable = "No"
         # self.OutputEnabled = 1                                # Validation there is output?
         # self.Title = ""
@@ -221,15 +243,27 @@ class Amp:
         "Push value based on it's key"
         return _uart.requestCommand(self.AmpNumber, _key + ":" + str(_value) + ";","High",0.1)
         
-    def requestUART(self,_uart,_key):
+    def requestUART(self,_uart,_key,wait=0.1):
         "Request value base on Key"
-        return _uart.requestCommand(self.AmpNumber, _key + ";","Low",0.1)
+        return _uart.requestCommand(self.AmpNumber, _key + ";","Low",wait)
         
     def saveAttribute(self,_key,_value):
-        self.Attributes={_key:_value}
+        #print("SAVE:" + _key + "='" + _value + "'", end=" ")
+        self.Attributes[_key] = _value
+        #print("Stored:=" + "'" + self.Attributes[_key] + "'")
+
+        #self.Attributes={"NEIL":_value}
+        #print("Attributes: " + str(self.Attributes))
     
     def readAttribute(self,_key):
-        return self.Attributes[_key]
+       # print("Attributes: " + str(self.Attributes))
+        if _key in self.Attributes.keys():
+            # print("Read>" + _key, end=' ')
+            # _value = self.Attributes[_key]
+            # print("Read:" + "'" + str(_value) + "'")
+            return self.Attributes[_key]
+        else:  
+            return None
 
 ### STA Methods - AmpState
     # def pushAmpState(self,uart):
@@ -465,11 +499,11 @@ class Amp:
 #         # Returns {0,1}
 #         return _uart.requestCommand(self.AmpNumber, "PLA:" + str(_playstate) + ";","Low",0.1)
 
-    def requestPlaybackStatus(self,_uart):
-        "Request current wifi playback status"
-        # PLA;
-        # Returns {0,1}
-        return _uart.requestCommand(self.AmpNumber, "PLA;","Low",0.1)
+    # def requestPlaybackStatus(self,_uart):
+    #     "Request current wifi playback status"
+    #     # PLA;
+    #     # Returns {0,1}
+    #     return _uart.requestCommand(self.AmpNumber, "PLA;","Low",0.1)
 
 #     def setPlaybackStatus(self,playstate):
 #         "Set Playback State"
@@ -477,11 +511,11 @@ class Amp:
 #         # Returns {0,1}
 #         self.PlayState = playstate
 
-    def getPlaybackStatus(self):
-        "Get Playback State"
-        # PLA;
-        # Returns {0,1}
-        return self.PlayState
+    # def getPlaybackStatus(self):
+    #     "Get Playback State"
+    #     # PLA;
+    #     # Returns {0,1}
+    #     return self.PlayState
 
 # ### STP Methods - Stop
 #     def requestStop(self,_uart):
@@ -1074,7 +1108,7 @@ class Amp:
 #         return self.Upgrading
 
 ### Print Methods
-    def printAmp(self,ampNumber): #remove ampNumber var if not needed now
+    def oldprintAmp(self,ampNumber): #remove ampNumber var if not needed now
         print("----- Amp: " + self.Name + "  |  Amp#: " + str(self.AmpNumber) + "  |  Ver: " + str(self.Version) + "  |  Sys: " + str(self.SystemState) + " -------")
         print("Source: " + self.SelectedSource, end='  |  ')
         print("Available: " + str(self.AvailableSources), end='  |  ')
@@ -1107,6 +1141,42 @@ class Amp:
         print("Title: " + self.Title, end='  |  ')
         print("Artist: " + self.Artist, end='  |  ')
         print("Album: " + self.Album)
+        print("----------------------------------------------")
+    
+    def printAmp(self): #remove ampNumber var if not needed now
+        # print("----- Amp: " + self.Attributes["Name"] + "  |  Amp#: " + str(self.AmpNumber) + "  |  Ver: " + str(self.Version) + "  |  Sys: " + str(self.SystemState) + " -------")
+        # print("Source: " + self.SelectedSource, end='  |  ')
+        # print("Available: " + str(self.AvailableSources), end='  |  ')
+        # print("Mute: " + str(self.Mute),end='  |  ')
+        print("Volume: " + str(self.readAttribute("VOL")),end='  |  ')
+        # print("MaxVolume: " + str(self.MaxVolume), end='  |  ')
+        # print("Treble: " + str(self.Treble),end='  |  ')
+        # print("Bass: " + str(self.Bass),end='  |  ')
+        # print("Virtual Bass: " + str(self.VirtualBass))
+        print("PlayState: " + str(self.readAttribute("PLA")), end='  |  ')
+        print("Track Position: " + str(self.readAttribute("ELP")), end='  |  ')
+        print("Feed: " + str(self.readAttribute("VND")), end='  |  ')
+        # print("LED: " + str(self.LED), end='  |  ')
+        # print("Loopmode: " + str(self.LoopMode), end='  |  ')
+        # print("Audiable:" + self.Audiable, end='  |  ')
+        # print("AudioChannel:" + self.AudioChannel, end='  |  ')
+        # print("Output Enabled:" + str(self.OutputEnabled))
+        # print("Beep:" + str(self.Beep))
+        # print("Upgrading:" + str(self.Upgrading), end='  |  ')
+        # print("Network:" + str(self.Network), end='  |  ')      # Maybe same as Ethernet
+        # print("Ethernet:" + str(self.Ethernet), end='  |  ')
+        # print("Internet:" + str(self.Internet), end='  |  ')    # Maybe same as WWW
+        # print("WWW:" + str(self.WWW), end='  |  ')
+        # print("MultiRoom Status:" + str(self.MultiRoomStatus))
+        # print("Voice Prompt:" + str(self.VoicePrompt), end='  |  ')
+        # print("System Delay Time:" + str(self.SystemDelayTime), end='  |  ')
+        # print("Auto Switch:" + str(self.AutoSwitch), end='  |  ')
+        # print("Power On Source:" + str(self.PowerOnSource), end='  |  ')
+        # print("Preset:" + str(self.Preset))
+        # print("Feed: " + self.Feed, end='  |  ')
+        print("Title: " + str(self.readAttribute("TIT")), end='  |  ')
+        print("Artist: " + str(self.readAttribute("ALB")), end='  |  ')
+        print("Album: " + str(self.readAttribute("ART")))
         print("----------------------------------------------")
 
 # Button status
@@ -1381,7 +1451,6 @@ class UART_Communication(UART_Multiplexer):
 
     def pushToQueue(self,ampNumber,message,priority,wait):
         addedToQueueTicks = tickNow()
-
         # Lock Variable
         if Flag_UART_Threading_Enabled == True:
             baton.acquire()
@@ -1610,128 +1679,130 @@ class UART_Communication(UART_Multiplexer):
             ##self.ResponseBuffer[request] = self.ResponseBuffer[request][4:]
 
             #print(" <" + str(self.ResponseBuffer[request]) + "> ")
-            print(requestType + "#{" + response + "} ",end='')
+            #print("RECEIVED:" + requestType + "#(" + response + ") ",end='')
 
-            ###### Status change
-            if requestType == "STA":
-                MA.Amplifiers[ampNumber].setStatus(response)
-            ###### Volume change
-            elif requestType == "VOL":
-                MA.Amplifiers[ampNumber].setVolume(response)
-            ###### Source change
-            elif requestType == "SRC":
-                MA.Amplifiers[ampNumber].setInputSource(response)
-            ###### Mute change
-            elif requestType == "MUT":
-                MA.Amplifiers[ampNumber].setVolume(response)
-            ###### Play Pause toggle
-            elif requestType == "POP":
-                MA.Amplifiers[ampNumber].setPlayPause(response)
-            ###### Stop 
-            elif requestType == "STP":
-                MA.Amplifiers[ampNumber].Stop(response)
-            ###### Next track 
-            elif requestType == "NXT":
-                MA.Amplifiers[ampNumber].Next(response)
-            ###### Previous track 
-            elif requestType == "PRE":
-                MA.Amplifiers[ampNumber].Previous(response)
-            ###### Title 
-            elif requestType == "TIT":
-                MA.Amplifiers[ampNumber].setTitle(response)
-            ###### Album 
-            elif requestType == "ALB":
-                MA.Amplifiers[ampNumber].setAlbum(response)
-            ###### Artist 
-            elif requestType == "ART":
-                MA.Amplifiers[ampNumber].setArtist(response)
-            ###### Track position 
-            elif requestType == "ELP":
-                MA.Amplifiers[ampNumber].setTrackPosition(response)
-            ###### VND???? Don't know 
-            elif requestType == "VND":
-                MA.Amplifiers[ampNumber].setFeed(response)
-            ###### Playing information 
-            elif requestType == "PLA":
-                MA.Amplifiers[ampNumber].setPlaybackStatus(response)
-            ###### Amp Name 
-            elif requestType == "NAM":
-                MA.Amplifiers[ampNumber].setName(response)
-            ###### System status 
-            elif requestType == "SYS":
-                MA.Amplifiers[ampNumber].setSystemState(response)
-            ###### Amp Version 
-            elif requestType == "VER":
-                MA.Amplifiers[ampNumber].setVersion(response)
-            ###### Amp Version 
-            elif requestType == "WWW":
-                MA.Amplifiers[ampNumber].setWWW(response)
-            ###### Amp Version 
-            elif requestType == "AUD":
-                MA.Amplifiers[ampNumber].setOutputEnable(response)
-            ###### Amp Version 
-            elif requestType == "BAS":
-                MA.Amplifiers[ampNumber].setBass(response)
-            ###### Amp Version 
-            elif requestType == "TRE":
-                MA.Amplifiers[ampNumber].setTreble(response)
-            ###### Amp Version 
-            elif requestType == "BTC":
-                MA.Amplifiers[ampNumber].setBluetoothStatus(response)
-            ###### Amp Version 
-            elif requestType == "CHN":
-                MA.Amplifiers[ampNumber].setAudioChannel(response)
-            ###### Amp Version 
-            elif requestType == "MRM":
-                MA.Amplifiers[ampNumber].setMultiRoomStatus(response)
-            ###### Amp Version 
-            elif requestType == "LED":
-                MA.Amplifiers[ampNumber].setLED(response)
-            ###### Amp Version 
-            elif requestType == "BEP":
-                MA.Amplifiers[ampNumber].setBeepSound(response)
-            ###### Amp Version 
-            elif requestType == "PST":
-                MA.Amplifiers[ampNumber].setPreset(response)
-            ###### Amp Version 
-            elif requestType == "VBS":
-                MA.Amplifiers[ampNumber].setVirtualBass(response)
-            ###### Amp Version 
-            elif requestType == "WRS":
-                MA.Amplifiers[ampNumber].setWifiReset(response)
-            ###### Amp Version 
-            elif requestType == "LPM":
-                MA.Amplifiers[ampNumber].setLoopMode(response)
-            ###### Amp Version 
-            elif requestType == "ETH":
-                MA.Amplifiers[ampNumber].setEthernet(response)
-            ###### Amp Version 
-            elif requestType == "WIF":
-                MA.Amplifiers[ampNumber].setWifi(response)
-            ###### Amp Version 
-            elif requestType == "PMT":
-                MA.Amplifiers[ampNumber].setVoicePrompt(response)
-            ###### Amp Version 
-            elif requestType == "PRG":
-                MA.Amplifiers[ampNumber].setPreGain(response)
-            ###### Amp Version 
-            elif requestType == "DLY":
-                MA.Amplifiers[ampNumber].setSystemDelayTime(response)
-            ###### Amp Version 
-            elif requestType == "MXV":
-                MA.Amplifiers[ampNumber].setMaxVolume(response)
-            ###### Amp Version 
-            elif requestType == "ASW":
-                MA.Amplifiers[ampNumber].setAutoSwitch(response)
-            ###### Amp Version 
-            elif requestType == "POM":
-                MA.Amplifiers[ampNumber].setPowerOnMode(response)
-            ###### Amp Version 
-            elif requestType == "ZON":
-                MA.Amplifiers[ampNumber].setZoneMessage(response)
-            ###### Amp Version 
-            elif requestType == "NET":
-                MA.Amplifiers[ampNumber].setNetwork(response)
+            MA.Amplifiers[ampNumber].saveAttribute(requestType,response)
+
+            # ###### Status change
+            # if requestType == "STA":
+            #     MA.Amplifiers[ampNumber].setStatus(response)
+            # ###### Volume change
+            # elif requestType == "VOL":
+            #     MA.Amplifiers[ampNumber].setVolume(response)
+            # ###### Source change
+            # elif requestType == "SRC":
+            #     MA.Amplifiers[ampNumber].setInputSource(response)
+            # ###### Mute change
+            # elif requestType == "MUT":
+            #     MA.Amplifiers[ampNumber].setVolume(response)
+            # ###### Play Pause toggle
+            # elif requestType == "POP":
+            #     MA.Amplifiers[ampNumber].setPlayPause(response)
+            # ###### Stop 
+            # elif requestType == "STP":
+            #     MA.Amplifiers[ampNumber].Stop(response)
+            # ###### Next track 
+            # elif requestType == "NXT":
+            #     MA.Amplifiers[ampNumber].Next(response)
+            # ###### Previous track 
+            # elif requestType == "PRE":
+            #     MA.Amplifiers[ampNumber].Previous(response)
+            # ###### Title 
+            # elif requestType == "TIT":
+            #     MA.Amplifiers[ampNumber].setTitle(response)
+            # ###### Album 
+            # elif requestType == "ALB":
+            #     MA.Amplifiers[ampNumber].setAlbum(response)
+            # ###### Artist 
+            # elif requestType == "ART":
+            #     MA.Amplifiers[ampNumber].setArtist(response)
+            # ###### Track position 
+            # elif requestType == "ELP":
+            #     MA.Amplifiers[ampNumber].setTrackPosition(response)
+            # ###### VND???? Don't know 
+            # elif requestType == "VND":
+            #     MA.Amplifiers[ampNumber].setFeed(response)
+            # ###### Playing information 
+            # elif requestType == "PLA":
+            #     MA.Amplifiers[ampNumber].setPlaybackStatus(response)
+            # ###### Amp Name 
+            # elif requestType == "NAM":
+            #     MA.Amplifiers[ampNumber].setName(response)
+            # ###### System status 
+            # elif requestType == "SYS":
+            #     MA.Amplifiers[ampNumber].setSystemState(response)
+            # ###### Amp Version 
+            # elif requestType == "VER":
+            #     MA.Amplifiers[ampNumber].setVersion(response)
+            # ###### Amp Version 
+            # elif requestType == "WWW":
+            #     MA.Amplifiers[ampNumber].setWWW(response)
+            # ###### Amp Version 
+            # elif requestType == "AUD":
+            #     MA.Amplifiers[ampNumber].setOutputEnable(response)
+            # ###### Amp Version 
+            # elif requestType == "BAS":
+            #     MA.Amplifiers[ampNumber].setBass(response)
+            # ###### Amp Version 
+            # elif requestType == "TRE":
+            #     MA.Amplifiers[ampNumber].setTreble(response)
+            # ###### Amp Version 
+            # elif requestType == "BTC":
+            #     MA.Amplifiers[ampNumber].setBluetoothStatus(response)
+            # ###### Amp Version 
+            # elif requestType == "CHN":
+            #     MA.Amplifiers[ampNumber].setAudioChannel(response)
+            # ###### Amp Version 
+            # elif requestType == "MRM":
+            #     MA.Amplifiers[ampNumber].setMultiRoomStatus(response)
+            # ###### Amp Version 
+            # elif requestType == "LED":
+            #     MA.Amplifiers[ampNumber].setLED(response)
+            # ###### Amp Version 
+            # elif requestType == "BEP":
+            #     MA.Amplifiers[ampNumber].setBeepSound(response)
+            # ###### Amp Version 
+            # elif requestType == "PST":
+            #     MA.Amplifiers[ampNumber].setPreset(response)
+            # ###### Amp Version 
+            # elif requestType == "VBS":
+            #     MA.Amplifiers[ampNumber].setVirtualBass(response)
+            # ###### Amp Version 
+            # elif requestType == "WRS":
+            #     MA.Amplifiers[ampNumber].setWifiReset(response)
+            # ###### Amp Version 
+            # elif requestType == "LPM":
+            #     MA.Amplifiers[ampNumber].setLoopMode(response)
+            # ###### Amp Version 
+            # elif requestType == "ETH":
+            #     MA.Amplifiers[ampNumber].setEthernet(response)
+            # ###### Amp Version 
+            # elif requestType == "WIF":
+            #     MA.Amplifiers[ampNumber].setWifi(response)
+            # ###### Amp Version 
+            # elif requestType == "PMT":
+            #     MA.Amplifiers[ampNumber].setVoicePrompt(response)
+            # ###### Amp Version 
+            # elif requestType == "PRG":
+            #     MA.Amplifiers[ampNumber].setPreGain(response)
+            # ###### Amp Version 
+            # elif requestType == "DLY":
+            #     MA.Amplifiers[ampNumber].setSystemDelayTime(response)
+            # ###### Amp Version 
+            # elif requestType == "MXV":
+            #     MA.Amplifiers[ampNumber].setMaxVolume(response)
+            # ###### Amp Version 
+            # elif requestType == "ASW":
+            #     MA.Amplifiers[ampNumber].setAutoSwitch(response)
+            # ###### Amp Version 
+            # elif requestType == "POM":
+            #     MA.Amplifiers[ampNumber].setPowerOnMode(response)
+            # ###### Amp Version 
+            # elif requestType == "ZON":
+            #     MA.Amplifiers[ampNumber].setZoneMessage(response)
+            # ###### Amp Version 
+            # elif requestType == "NET":
+            #     MA.Amplifiers[ampNumber].setNetwork(response)
 
         print()
 
@@ -1791,8 +1862,6 @@ if Flag_UART_Threading_Enabled == True:
 
 MA.refreshAllAmpStatus(UART_Com)
 
-#UART_Com.requestCommand(1, "PLA","High")
-#UART_Com.requestCommand(1, "OLD","Pause")
 
 lastPrune = tickNow()
 lastParse = tickNow()
