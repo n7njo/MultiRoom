@@ -106,33 +106,38 @@ class MultiAmp:
         #self.AmpsInstalled = ["Oasis","Pool","Italian"]   
         self.AmpsInstalled = ["Pool"]                                     
 
-    def ampDiscovery(self,cycleAttempts,waitForResponse):
+    def ampDiscovery(self,_cycleAttempts,_waitForResponse,_uart):
         "Cycle through the multiplexer a specified number of times waiting for a responce"
         # What happens if the amp has changed it's name
 
         # Loop from begnning to max sending a status message to each Amp
-        for cycles in range(cycleAttempts):
+        for cycles in range(_cycleAttempts):
             # Loop through all the Amps on the multiplexer
-            for ampNumber in range(Limit_UART_Multiplexer_Max_Channels):
-                UART_Com.setLiveChannel(ampNumber)
-                UART_Com.setMultiplexState("on")
+            for _ampNumber in range(Limit_UART_Multiplexer_Max_Channels):
+                _uart.setLiveChannel(_ampNumber)
+                _uart.setMultiplexState("on")
+                print("PINGING UART: " +str(_ampNumber) + ">",end='')
+                # Can we find a version number for current Amp
+                if _uart.transmitRequest("VER;",_waitForResponse):
+                    print("Found")
+
                 ## Only needed because pulling from predefined list NOT LOOKING DOWN THE UART
-                if len(self.AmpsInstalled) > ampNumber:
-                    AmpName = self.AmpsInstalled[ampNumber]
+                if len(self.AmpsInstalled) > _ampNumber:
+                    AmpName = self.AmpsInstalled[_ampNumber]
                     #print(str(ampNumber) + ":"+ AmpName)
 
-                    if self.Amplifiers.get(ampNumber):
+                    if self.Amplifiers.get(_ampNumber):
                         print("Skipping: ", end='')
-                        print(self.Amplifiers[ampNumber].Name)
+                        print(self.Amplifiers[_ampNumber].Name)
                     else:
                         print("Creating Amp: ", end='')
                         NewAmp = Amp()
-                        self.Amplifiers[ampNumber] = NewAmp 
-                        self.Amplifiers[ampNumber].Name = AmpName
-                        self.Amplifiers[ampNumber].AvailableSources = self.List_Sources_Enabled
-                        self.Amplifiers[ampNumber].AmpNumber = ampNumber
-                        print(self.Amplifiers[ampNumber].Name)
-                UART_Com.setMultiplexState("off")
+                        self.Amplifiers[_ampNumber] = NewAmp 
+                        self.Amplifiers[_ampNumber].Name = AmpName
+                        self.Amplifiers[_ampNumber].AvailableSources = self.List_Sources_Enabled
+                        self.Amplifiers[_ampNumber].AmpNumber = _ampNumber
+                        print(self.Amplifiers[_ampNumber].Name)
+                _uart.setMultiplexState("off")
                 # No hardcoded Amp name found - REMOVE once dynamic
                 #else:
                     #print(ampNumber, end='')
@@ -268,7 +273,8 @@ class MultiAmp:
              self.Amplifiers[ampNumber].requestUART(_uart,"ALB")
              self.Amplifiers[ampNumber].requestUART(_uart,"VND")
         
-        self.Amplifiers[ampNumber].printAmp()
+        print(".",end='')
+        #self.Amplifiers[ampNumber].printAmp()
 
     def refreshAllAmpStatus(self,_uart):
         "Update all amplifier statuses"
@@ -346,24 +352,7 @@ class Amp:
             return self.Attributes[_key]
         else:  
             return None
-
-# ### NAM Methods - Name
-#     def pushName(self,_name,_uart):
-#         "Push Amp Name"
-#         # NAM: <HEX string>;
-#         # hexed string with UTF8 encoding
-#         # print("NAM")
-#         # print(ubinascii.unhexlify(name))
-#         #self.Name = ubinascii.unhexlify(name)
-#         return _uart.requestCommand(self.AmpNumber, "NAM:" + str(_name) + ";","High",0.1)
-    
-#     def requestName(self,_uart):
-#         "Request current Amp Name"
-#         # NAM;
-#         # Returns <HEX string>
-#         return _uart.requestCommand(self.AmpNumber, "NAM;","Low",0.1)   
    
-
     def printAmp(self): #remove ampNumber var if not needed now
         print("----- Amp: " + str(self.readAttribute("NAM")) + "  |  Amp#: " + str(self.AmpNumber) + "  |  Ver: " + str(self.readAttribute("VER")) + "  |  Sys: " + str(self.readAttribute("SYS")) + " -------")
         print("Source: " + str(self.readAttribute("SRC")),end='  |  ')
@@ -948,7 +937,7 @@ MA = MultiAmp()
 UART_Com = UART_Communication()
 
 # Find Amps and create the objects
-MA.ampDiscovery(1,1)
+MA.ampDiscovery(1,1,UART_Com)
 
 ###### Spawning Second Thread ######
 
@@ -967,6 +956,8 @@ lastProcessed = tickNow()
 lastQueuePrint = tickNow()
 lastAutoGenerateLow = tickNow()
 lastCheckAllStatus = tickNow()
+
+lastAmpPrint = tickNow()
 
 
 while True:
@@ -996,4 +987,8 @@ while True:
         lastProcessed = tickNow()
         UART_Com.sendNextCommandFromQueue()
 
-
+    if secondsSinceTick(lastAmpPrint) > 10:
+        lastAmpPrint = tickNow()
+        print("Number of Amps: " + str(len(MA.Amplifiers)))
+        for ampNumber in range(len(MA.Amplifiers)):
+            MA.Amplifiers[ampNumber].printAmp()
