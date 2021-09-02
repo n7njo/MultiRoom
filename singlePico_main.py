@@ -35,12 +35,19 @@
         # PIO is a very low level ablity to write a custom messaging protocal
 
 
-import utime
-import machine
-import _thread
-from machine import UART,Pin
-import ure
-import ubinascii
+#import utime
+from utime import sleep_ms, sleep, ticks_us, ticks_ms, ticks_diff
+#import _thread
+from _thread import start_new_thread, allocate_lock
+from machine import UART,Pin,SPI
+#import ure
+from ure import match
+#import ubinascii
+from ubinascii import unhexlify
+#import time
+import framebuf
+#from framebuf import FrameBuffer, framebuf
+from math import floor
 
 
 ### Configure Pins
@@ -51,28 +58,37 @@ Pin_LED_RED = 14            # Need to confirm if PWM capable
 Pin_BUT_Amp_Cycle = 21      #
 Pin_BUT_Source_Cycle = 22   #
 Pin_LED_Internal = 25       #
-Pin_UART_Multi_S0 = 13      # Mutliplexer select Bit 0
-Pin_UART_Multi_S1 = 14      # Mutliplexer select Bit 1 
-Pin_UART_Multi_E = 16       # Mutliplexer Enable
-Pin_UART_Multi_Signal = 18  # Mulliplexer Signal
-Pin_UART_TX = 4
-Pin_UART_RX = 5
+Pin_UART_Multi_S0 = 19      # Mutliplexer select Bit 0
+Pin_UART_Multi_S1 = 18      # Mutliplexer select Bit 1 
+Pin_UART_Multi_E = 20       # Mutliplexer Enable
+Pin_UART_Multi_Signal = 18  # Mulliplexer Signal     ---- Not needed for UART
+Pin_UART_TX = 16
+Pin_UART_RX = 17
+
+Pin_SPI_DC = 5
+Pin_SPI_CS = 1              # SPI CS
+Pin_SPI_Res = 4
+Pin_SPI_MOSI = 3            # SPI TX
+Pin_SPI_MISO = 0            # SPI RX
+Pin_SPI_SCLK = 2            # SPI Clock
+
+Pico_Channel_UART = 0       # Which Pico coms channel will be used
 
 
 # LEDs
-LED_Internal = machine.Pin(Pin_LED_Internal, machine.Pin.OUT)
-LED_Green = machine.Pin(Pin_LED_Green, machine.Pin.OUT)
-LED_Blue = machine.Pin(Pin_LED_Blue, machine.Pin.OUT)
+LED_Internal = Pin(Pin_LED_Internal, Pin.OUT)
+LED_Green = Pin(Pin_LED_Green, Pin.OUT)
+LED_Blue = Pin(Pin_LED_Blue, Pin.OUT)
 
 
 # Buttons
-Button_Source_Cycle = machine.Pin(Pin_BUT_Source_Cycle, machine.Pin.IN, machine.Pin.PULL_UP)
-Button_Amp_Cycle = machine.Pin(Pin_BUT_Amp_Cycle, machine.Pin.IN, machine.Pin.PULL_UP)
+# Button_Source_Cycle = Pin(Pin_BUT_Source_Cycle, Pin.IN, Pin.PULL_UP)
+# Button_Amp_Cycle = Pin(Pin_BUT_Amp_Cycle, Pin.IN, Pin.PULL_UP)
 
 # Limits
 Limit_UART_Max_Queue_Length = 5                                                             # Queue size for waiting UART requests
 Limit_UART_Throttling_Queue_Length = 5                                                      # Throttling queue size if Low requests are impacting
-Limit_UART_Multiplexer_Max_Channels = 4                                                    # How many channels does the multiplexer have
+Limit_UART_Multiplexer_Max_Channels = 3                                                    # How many channels does the multiplexer have
 Limit_UART_Multiplexer_Max_Minutes_Looking = 10                                             # Max minutes to look for channels in available
 Limit_LineIn_Multiplexer_Max_Channels = 4                                                  # Max chanels on the multiplexter for LineIn
 Limit_LineOut_Multiplexer_Max_Channels = 0                                                  # Max chanels on the multiplexter for LineOut
@@ -84,10 +100,10 @@ Flag_System_RedLine = False
 
 # Common Functions
 def tickNow():
-    return utime.ticks_us()
+    return ticks_us()
 
 def secondsBetweenTick(firstTimestamp,secondTimestamp):
-    return utime.ticks_diff(firstTimestamp,secondTimestamp)
+    return ticks_diff(firstTimestamp,secondTimestamp)
 
 def secondsSinceTick(timestamp):
     #return round(secondsBetweenTick(tickNow(),timestamp)/1000000,4)
@@ -106,7 +122,7 @@ class MultiAmp:
         #self.AmpsInstalled = ["Oasis","Pool","Italian"]   
         self.AmpsInstalled = ["Pool"]                                     
 
-    def ampDiscovery(self,_cycleAttempts,_waitForResponse,_uart):
+    def ampDiscovery(self,_cycleAttempts,_waitForResponse,_uart,_oled):
         "Cycle through the multiplexer a specified number of times waiting for a responce"
         # What happens if the amp has changed it's name
 
@@ -120,6 +136,8 @@ class MultiAmp:
                 # Can we find a version number for current Amp
                 if _uart.transmitRequest("VER;",_waitForResponse):
                     print("Found")
+                    _oled.ImportantMessage("Found amplifier: " + str(_ampNumber))
+                    _uart.transmitRequest("LED:0;",0.1)
 
                 ## Only needed because pulling from predefined list NOT LOOKING DOWN THE UART
                 if len(self.AmpsInstalled) > _ampNumber:
@@ -137,6 +155,7 @@ class MultiAmp:
                         self.Amplifiers[_ampNumber].AvailableSources = self.List_Sources_Enabled
                         self.Amplifiers[_ampNumber].AmpNumber = _ampNumber
                         print(self.Amplifiers[_ampNumber].Name)
+                        _oled.ImportantMessage("Initialized: " + self.Amplifiers[_ampNumber].Name)
                 _uart.setMultiplexState("off")
                 # No hardcoded Amp name found - REMOVE once dynamic
                 #else:
@@ -149,7 +168,7 @@ class MultiAmp:
         "Change selected amp"
         self.AmpSelected = ampNumber
 
-    def getAmpSelected(self):
+    def getAmpSelected(self) -> int:
         "Return current selected amp"
         return self.AmpSelected
 
@@ -175,96 +194,13 @@ class MultiAmp:
         # Don't trust the general status to show correct play status
         #### self.Amplifiers[ampNumber].requestPlaybackStatus(_uart)
 
-        # Send blank request - to look for UARt in the buffer
+        # Send blank request - to look for UART in the buffer
         self.Amplifiers[ampNumber].requestUART(_uart,"")
 
-        # Unknown LED
-        if self.Amplifiers[ampNumber].readAttribute("LED") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"LED")
-
-        # Unknown Treble
-        if self.Amplifiers[ampNumber].readAttribute("TRE") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"TRE")
-
-        # Unknown Bass
-        if self.Amplifiers[ampNumber].readAttribute("BAS") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"BAS")
-
-        # Unknown Vertual Bass
-        if self.Amplifiers[ampNumber].readAttribute("VBS") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"VBS")
-        
-        # Unknown Loopmode
-        if self.Amplifiers[ampNumber].readAttribute("LPM") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"LPM")
-
-        # Unknown Multiroom Audio
-        if self.Amplifiers[ampNumber].readAttribute("MRM") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"MRM")
-
-        # Unknown Audioable
-        if self.Amplifiers[ampNumber].readAttribute("AUD") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"AUD")
-
-        # Unknown Audio Channel
-        if self.Amplifiers[ampNumber].readAttribute("CHN") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"CHN")
-        
-        # Unknown Beep Sound
-        if self.Amplifiers[ampNumber].readAttribute("BEP") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"BEP")
-
-        # Unknown Pregain
-        if self.Amplifiers[ampNumber].readAttribute("PRG") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"PRG")
-
-        # Unknown Preset
-        if self.Amplifiers[ampNumber].readAttribute("PRE") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"PRE")
-
-        # Unknown Bluetooth
-        if self.Amplifiers[ampNumber].readAttribute("BTC") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"BTC")
-
-        # Unknown Bluetooth
-        if self.Amplifiers[ampNumber].readAttribute("BTC") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"BTC")
-
-        # Unknown Bluetooth
-        if self.Amplifiers[ampNumber].readAttribute("BTC") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"BTC")
-
-        # Unknown Bluetooth
-        if self.Amplifiers[ampNumber].readAttribute("BTC") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"BTC")
-
-        # Unknown Bluetooth
-        if self.Amplifiers[ampNumber].readAttribute("BTC") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"BTC")
 
         # Unknown Name
         if self.Amplifiers[ampNumber].readAttribute("NAM") == None:
             self.Amplifiers[ampNumber].requestUART(_uart,"NAM")
-
-        # Unknown Version
-        if self.Amplifiers[ampNumber].readAttribute("VER") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"VER")
-
-        # Unknown Play state
-        if self.Amplifiers[ampNumber].readAttribute("PLA") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"PLA")
-
-        # Unknown Max Volume
-        if self.Amplifiers[ampNumber].readAttribute("MXV") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"MXV")
-
-        # Unknown Volume
-        if self.Amplifiers[ampNumber].readAttribute("VOL") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"VOL")
-
-        # Unknown Mute
-        if self.Amplifiers[ampNumber].readAttribute("MUT") == None:
-            self.Amplifiers[ampNumber].requestUART(_uart,"MUT")
 
         # Missing song info
         if self.Amplifiers[ampNumber].readAttribute("TIT") == None:
@@ -272,6 +208,111 @@ class MultiAmp:
              self.Amplifiers[ampNumber].requestUART(_uart,"ART")
              self.Amplifiers[ampNumber].requestUART(_uart,"ALB")
              self.Amplifiers[ampNumber].requestUART(_uart,"VND")
+
+
+        # Unknown Volume
+        if self.Amplifiers[ampNumber].readAttribute("VOL") == None:
+            self.Amplifiers[ampNumber].requestUART(_uart,"VOL")
+
+        # Unknown Play state
+        if self.Amplifiers[ampNumber].readAttribute("PLA") == None:
+            self.Amplifiers[ampNumber].requestUART(_uart,"PLA")
+
+        # Unknown Source
+        if self.Amplifiers[ampNumber].readAttribute("SRC") == None:
+            self.Amplifiers[ampNumber].requestUART(_uart,"SRC")
+
+        # Position update if playing
+        if self.Amplifiers[ampNumber].readAttribute("PLA") == "1":
+            self.Amplifiers[ampNumber].requestUART(_uart,"ELP")
+
+        _one_at_a_time = True
+        if _one_at_a_time:
+            # Unknown Wifi
+            if self.Amplifiers[ampNumber].readAttribute("WIF") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"WIF")
+                _one_at_a_time = False
+        if _one_at_a_time:        
+            # Unknown Loopmode
+            if self.Amplifiers[ampNumber].readAttribute("LPM") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"LPM")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Audio Channel
+            if self.Amplifiers[ampNumber].readAttribute("CHN") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"CHN")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Bluetooth
+            if self.Amplifiers[ampNumber].readAttribute("BTC") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"BTC")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Mute
+            if self.Amplifiers[ampNumber].readAttribute("MUT") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"MUT")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown LED
+            if self.Amplifiers[ampNumber].readAttribute("LED") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"LED")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Treble
+            if self.Amplifiers[ampNumber].readAttribute("TRE") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"TRE")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Bass
+            if self.Amplifiers[ampNumber].readAttribute("BAS") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"BAS")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Vertual Bass
+            if self.Amplifiers[ampNumber].readAttribute("VBS") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"VBS")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Multiroom Audio
+            if self.Amplifiers[ampNumber].readAttribute("MRM") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"MRM")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Audioable
+            if self.Amplifiers[ampNumber].readAttribute("AUD") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"AUD")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Version
+            if self.Amplifiers[ampNumber].readAttribute("POM") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"POM")
+                _one_at_a_time = False
+        if _one_at_a_time:          
+            # Unknown Beep Sound
+            if self.Amplifiers[ampNumber].readAttribute("BEP") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"BEP")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Pregain
+            if self.Amplifiers[ampNumber].readAttribute("PRG") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"PRG")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Max Volume
+            if self.Amplifiers[ampNumber].readAttribute("MXV") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"MXV")
+                _one_at_a_time = False
+        if _one_at_a_time:
+            # Unknown Version
+            if self.Amplifiers[ampNumber].readAttribute("VER") == None:
+                self.Amplifiers[ampNumber].requestUART(_uart,"VER")
+                _one_at_a_time = False
+        # if _one_at_a_time:
+        #     # Unknown Preset
+        #     if self.Amplifiers[ampNumber].readAttribute("PST") == None:
+        #         self.Amplifiers[ampNumber].requestUART(_uart,"PST")
+        #         _one_at_a_time = False
+
         
         print(".",end='')
         #self.Amplifiers[ampNumber].printAmp()
@@ -290,13 +331,8 @@ class Amp:
         self.Attributes = {}                                    # Master Dictionary for all settings
         self.AmpNumber = -1
         self.AvailableSources = []
-                # STA: {source,mute,volume,treble,bass,net,internet,playing,led,upgrading};
-        # SYS: {REBOOT/STANDBY/ON};
-        # VER: <string>;
-        # WWW: {0,1};
-        # AUD: {0,1};
-        # VOL: {0..100};
-        # MUT: {0/1/T};
+        # self.FlagAttributes = ["WWW","AUD","PLA","BEP","VBS","WRS","ETH","WIF","PMT","PRG","DLY","MVX"]
+        # self.TrackStarted = tickNow()
         # BAS: {-10..10};
         # TRE: {-10..10};
         # PLA; {0,1}
@@ -331,13 +367,18 @@ class Amp:
         return _uart.requestCommand(self.AmpNumber, _key + ";","Low",wait)
         
     def saveAttribute(self,_key,_value):
-        # if _key == "NAM":
-        #     print ("NAME: " + str(ubinascii.unhexlify(_value).decode("ASCII")))
-        #     self.Attributes[_key] = str(ubinascii.unhexlify(_value).decode("ASCII"))
-        #     print(self.Attributes[_key])
-
         #print("SAVE:" + _key + "='" + _value + "'", end=" ")
+        # if _value in self.FlagAttributes:
+        #     if _value == 1:
+        #         self.Attributes[_key] = True
+        #     else:
+        #         self.Attributes[_key] = False
+        # else:
         self.Attributes[_key] = _value
+        # if _key == "EPL":
+        #     self.TrackStarted = tickNow()
+        #     print("TICK NOW" + str(self.TrackStarted))
+
         #print("Stored:=" + "'" + self.Attributes[_key] + "'")
     
     def readAttribute(self,_key):
@@ -345,7 +386,7 @@ class Amp:
         if _key in self.Attributes.keys():
 
             if _key == "NAM":
-                return ubinascii.unhexlify(self.Attributes[_key]).decode("ASCII")
+                return unhexlify(self.Attributes[_key]).decode("ASCII")
             # print("Read>" + _key, end=' ')
             # _value = self.Attributes[_key]
             # print("Read:" + "'" + str(_value) + "'")
@@ -382,7 +423,7 @@ class Amp:
         print("System Delay Time: " + str(self.readAttribute("DLY")), end='  |  ')
         print("Auto Switch: " + str(self.readAttribute("ASW")), end='  |  ')
         print("Power On Source: " + str(self.readAttribute("POM")), end='  |  ')
-        print("Preset: " + str(self.readAttribute("MRM")))
+        print("Preset: " + str(self.readAttribute("PST")))
         print("Title: " + str(self.readAttribute("TIT")), end='  |  ')
         print("Artist: " + str(self.readAttribute("ALB")), end='  |  ')
         print("Album: " + str(self.readAttribute("ART")))
@@ -390,65 +431,598 @@ class Amp:
         print("----------------------------------------------")
 
 # Button status
-class Button:
-    "Status of the buttons"
+# class Button:
+#     "Status of the buttons"
 
-    def __init__(self) -> None:
-        self.PlayPause = False
-        self.Stop = False
-        self.Forward = False
-        self.Reverse = False
-        self.Eject = False
-        self.Source = False
+#     def __init__(self) -> None:
+#         self.PlayPause = False
+#         self.Stop = False
+#         self.Forward = False
+#         self.Reverse = False
+#         self.Eject = False
+#         self.Source = False
 
-    def pressedPlayPause(self):
-        "Interupt received for Play Pause"
-        print("PlayPause")
+#     def pressedPlayPause(self):
+#         "Interupt received for Play Pause"
+#         print("PlayPause")
 
-    def pressedStop(self):
-        "Interupt received for Play Pause"
-        print("PlayPause")
+#     def pressedStop(self):
+#         "Interupt received for Play Pause"
+#         print("PlayPause")
 
-    def pressedForward(self):
-        "Interupt received for Play Pause"
-        print("PlayPause")
+#     def pressedForward(self):
+#         "Interupt received for Play Pause"
+#         print("PlayPause")
         
-    def pressedReverse(self):
-        "Interupt received for Play Pause"
-        print("PlayPause")
+#     def pressedReverse(self):
+#         "Interupt received for Play Pause"
+#         print("PlayPause")
         
-    def pressedEject(self):
-        "Interupt received for Play Pause"
-        print("PlayPause")
+#     def pressedEject(self):
+#         "Interupt received for Play Pause"
+#         print("PlayPause")
         
-    def pressedSource(self):
-        "Interupt received for Play Pause"
-        print("PlayPause")
+#     def pressedSource(self):
+#         "Interupt received for Play Pause"
+#         print("PlayPause")
 
 # LED control
-class LED:
-    "Control of LEDs, currently only Source"
+# class LED:
+#     "Control of LEDs, currently only Source"
 
-    def __init__(self) -> None:
-        self.CurrentColour = "Off"
-        self.NextColour = ""
+#     def __init__(self) -> None:
+#         self.CurrentColour = "Off"
+#         self.NextColour = ""
 
-    def matchSourcetoColour(self):
-        "If needed match the LED colour to the source colour"
+#     def matchSourcetoColour(self):
+#         "If needed match the LED colour to the source colour"
 
 # OLED Display
-class Display:
+
+class SSD1322:
+    def __init__(self, width=256, height=64):
+        self.width = width
+        self.height = height
+        self.buffer = bytearray(self.width * self.height //2)
+        self.framebuf = framebuf.FrameBuffer(self.buffer, self.width, self.height, framebuf.GS4_HMSB)
+
+        # self.poweron()
+        sleep_ms(5)
+        self.init_display()
+
+    def init_display(self):
+        self.write_cmd(0xFD)  # Set Command Lock (MCU protection status)
+        self.write_data(0x12)  # 0x12 = Unlock Basic Commands; 0x16 = lock
+
+        self.write_cmd(0xA4)  # Set Display Mode = OFF
+
+        self.write_cmd(0xB3)  # Set Front Clock Divider / Oscillator Frequency
+        self.write_data(0x91)  # 0x91 = 80FPS; 0xD0 = default / 1100b 
+
+        self.write_cmd(0xCA)  # Set MUX Ratio
+        self.write_data(0x3F)  # 0x3F = 63d = 64MUX (1/64 duty cycle)
+
+        self.write_cmd(0xA2)  # Set Display Offset
+        self.write_data(0x00)  # 0x00 = (default)
+
+        self.write_cmd(0xA1)  # Set Display Start Line
+        self.write_data(0x00)  # 0x00 = register 00h
+
+        self.write_cmd(0xA0)  # Set Re-map and Dual COM Line mode
+        self.write_data(0x14)  # 0x14 = Default except Enable Nibble Re-map, Scan from COM[N-1] to COM0, where N is the Multiplex ratio
+        self.write_data(0x11)  # 0x11 = Enable Dual COM mode (MUX <= 63)
+
+        self.write_cmd(0xB5)  # Set GPIO
+        self.write_data(0x00)  # 0x00 = {GPIO0, GPIO1 = HiZ (Input Disabled)}
+
+        self.write_cmd(0xAB)  # Function Selection
+        self.write_data(0x01)  # 0x01 = Enable internal VDD regulator (default)
+
+        self.write_cmd(0xB4)  # Display Enhancement A
+        self.write_data(0xA0)  # 0xA0 = Enable external VSL; 0xA2 = internal VSL
+        self.write_data(0xB5)  # 0xB5 = Normal (default); 0xFD = 11111101b = Enhanced low GS display quality
+
+        self.write_cmd(0xC1)  # Set Contrast Current
+        self.write_data(0x7F)  # 0x7F = (default)
+
+        self.write_cmd(0xC7)  # Master Contrast Current Control
+        self.write_data(0x0F)  # 0x0F = (default)
+
+        self.write_cmd(0xB8)  # Select Custom Gray Scale table (GS0 = 0)
+        self.write_data(0x00)  # GS1
+        self.write_data(0x02)  # GS2
+        self.write_data(0x08)  # GS3
+        self.write_data(0x0d)  # GS4
+        self.write_data(0x14)  # GS5
+        self.write_data(0x1a)  # GS6
+        self.write_data(0x20)  # GS7
+        self.write_data(0x28)  # GS8
+        self.write_data(0x30)  # GS9
+        self.write_data(0x38)  # GS10
+        self.write_data(0x40)  # GS11
+        self.write_data(0x48)  # GS12
+        self.write_data(0x50)  # GS13
+        self.write_data(0x60)  # GS14
+        self.write_data(0x70)  # GS15
+        self.write_data(0x00)  # Enable Custom Gray Scale table
+
+        self.write_cmd(0xB1)  # Set Phase Length
+        self.write_data(0xE2)  # 0xE2 = Phase 1 period (reset phase length) = 5 DCLKs,
+                               # Phase 2 period (first pre-charge phase length) = 14 DCLKs
+        self.write_cmd(0xD1)  # Display Enhancement B
+        self.write_data(0xA2)  # 0xA2 = Normal (default); 0x82 = reserved
+        self.write_data(0x20)  # 0x20 = as-is
+
+        self.write_cmd(0xBB)  # Set Pre-charge voltage
+        self.write_data(0x1F)  # 0x17 = default; 0x1F = 0.60*Vcc (spec example)
+
+        self.write_cmd(0xB6)  # Set Second Precharge Period
+        self.write_data(0x08)  # 0x08 = 8 dclks (default)
+
+        self.write_cmd(0xBE)  # Set VCOMH
+        self.write_data(0x07)  # 0x04 = 0.80*Vcc (default); 0x07 = 0.86*Vcc (spec example)
+
+        self.write_cmd(0xA6)  # Set Display Mode = Normal Display
+        self.write_cmd(0xA9)  # Exit Partial Display
+        self.write_cmd(0xAF)  # Set Sleep mode OFF (Display ON)
+        
+        self.fill(0)
+        self.write_data(self.buffer)
+
+    def poweroff(self):
+        self.write_cmd(0xAB)
+        self.write_data(0x00) # Disable internal VDD regulator, to save power
+        self.write_cmd(0xAE)
+
+    def poweron(self):
+        self.write_cmd(0xAB)
+        self.write_data(0x01) # Enable internal VDD regulator
+        self.write_cmd(0xAF)
+
+    def contrast(self, contrast):
+        self.write_cmd(0x81)
+        self.write_data(0x81) # 0-255
+
+    def rotate(self, rotate):
+        self.write_cmd(0xA0)
+        self.write_data(0x06 if rotate else 0x14)
+        self.write_data(0x11)
+
+    def invert(self, invert):
+        self.write_cmd(0xA4 | (invert & 1) << 1 | (invert & 1)) # 0xA4=Normal, 0xA7=Inverted
+
+    def show(self):
+        offset=(480-self.width)//2
+        col_start=offset//4
+        col_end=col_start+self.width//4-1
+        self.write_cmd(0x15)
+        self.write_data(col_start)
+        self.write_data(col_end)
+        self.write_cmd(0x75)
+        self.write_data(0)
+        self.write_data(self.height-1)
+        self.write_cmd(0x5c)
+        self.write_data(self.buffer)
+
+    def fill(self, col):
+        self.framebuf.fill(col)
+
+    def pixel(self, x, y, col):
+        self.framebuf.pixel(x, y, col)
+
+    def pp(self,x,y,col):
+        self.buffer[self.width//2*y+x//2]=0xff if col else 0
+
+    def line(self, x1, y1, x2, y2, col):
+        self.framebuf.line(x1, y1, x2, y2, col)
+
+    def scroll(self, dx, dy):
+        self.framebuf.scroll(dx, dy)
+        # software scroll
+
+    def text(self, string, x, y, col=15):
+        self.framebuf.text(string, x, y, col)
+
+    def write_cmd(self):
+        raise NotImplementedError
+
+    def write_data(self):
+        raise NotImplementedError
+
+class SSD1322_SPI(SSD1322):
+    def __init__(self, width, height, spi, dc,cs,res):
+        self.spi = spi
+        self.dc=dc
+        self.cs=cs
+        self.res=res
+
+        self.res(1)
+        sleep_ms(1)
+        self.res(0)
+        sleep_ms(10)
+        self.res(1)
+
+        super().__init__(width, height)
+        sleep_ms(5)
+
+    def write_cmd( self, aCommand ) :
+        '''Write given command to the device.'''
+        self.dc(0)
+        self.cs(0)
+        self.spi.write(bytearray([aCommand]))
+        self.cs(1)
+
+    #@micropython.native
+    def write_data( self, aData ) :
+        '''Write given data to the device.  This may be
+           either a single int or a bytearray of values.'''
+        self.dc(1)
+        self.cs(0)
+        if type(aData)==bytes or type(aData)==bytearray:
+            self.spi.write(aData)
+        else:
+            self.spi.write(bytearray([aData]))
+        self.cs(1)
+
+class Display(SSD1322_SPI):
     "Control of Display"
+
+    def __init__(self):
+        spi = SPI(0, baudrate=16000000,polarity=0, phase=0, sck=Pin(Pin_SPI_SCLK), mosi=Pin(Pin_SPI_MOSI), miso=Pin(Pin_SPI_MISO))
+        dc=Pin(Pin_SPI_DC,Pin.OUT)
+        cs=Pin(Pin_SPI_CS,Pin.OUT)
+        res=Pin(Pin_SPI_Res,Pin.OUT)
+        super().__init__(256,64,spi,dc,cs,res)
+
+    def ImportantMessage(self, _message):
+        self.fill(0)
+        self.text(_message,20,30,0xff)
+        self.show()
+
+    def ProgressBar(self,_x_start,_y_start,_x_width,_y_height,_orientation,_direction,_current_percent,_box_bright,_line_bright):
+        "Draw progress bar with percent completed"
+        # Position box
+        self.DrawBox(_x_start,_y_start,_x_width,_y_height,_box_bright)
+
+        if _orientation == "Horizontal":
+            # Calculate horizontal position
+            if _direction == "Right":
+                _current_x_position = _x_start + int(_x_width *_current_percent)            
+            else:
+                _current_x_position = (_x_start + _x_width) - int(_x_width * _current_percent)
+
+            # Position Line
+            self.line(_current_x_position,_y_start-1,_current_x_position,_y_start+_y_height+1,_line_bright)
+
+        elif _orientation == "Vertical":
+            # Calculate vertical position
+            if _direction == "Up":
+                _current_y_position = _y_start+ _y_height - int(_y_height * _current_percent)
+            else:
+                _current_y_position = _y_start + int(_y_height * _current_percent)
+
+            # Position Line
+            self.line(_x_start-1,_current_y_position,_x_start+_x_width+1,_current_y_position,_line_bright)
+
+    def DrawPlay(self,_x_start,_y_start,_x_width,_y_height,_symbol_bright):
+        "Draw a hollow equalatral triangle"
+        # Top Left
+        self.line(_x_start,_y_start,_x_start+_x_width,_y_start+int(_y_height/2),_symbol_bright)
+        self.line(_x_start+_x_width,_y_start+int(_y_height/2),_x_start,_y_start+_y_height,_symbol_bright)
+        self.line(_x_start,_y_start+_y_height,_x_start,_y_start,_symbol_bright)
+
+    def DrawBox(self,_x_start,_y_start,_x_width,_y_height,_brightness):
+        "Draw hollow box"
+        # Top Line
+        self.line(_x_start,_y_start,_x_start+_x_width,_y_start,_brightness)
+        # Bottom Line
+        self.line(_x_start,_y_start+_y_height,_x_start+_x_width,_y_start+_y_height,_brightness)
+        # Left Line
+        self.line(_x_start,_y_start,_x_start,_y_start+_y_height,_brightness)
+        # Right Line
+        self.line(_x_start+_x_width,_y_start,_x_start+_x_width,_y_start+_y_height,_brightness)
+
+    def DrawPause(self,_x_start,_y_start,_x_width,_y_height,_symbol_bright):
+        "Draw a hollow pause button"
+        # Left box
+        self.DrawBox(_x_start,_y_start,int(_x_width/3),_y_height,_symbol_bright)
+        self.DrawBox(_x_start+int(_x_width/3)*2,_y_start,int(_x_width/3),_y_height,_symbol_bright)
+
+    def DrawSpotify(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Spotify logo"
+        # Row 1
+        self.line(_x_start+1,_y_start+1,_x_start+7,_y_start+1,_symbol_bright)
+        # Row 2
+        self.line(_x_start+0,_y_start+2,_x_start+1,_y_start+2,_symbol_bright)
+        self.line(_x_start+7,_y_start+2,_x_start+8,_y_start+2,_symbol_bright)
+        # Row 3
+        self.line(_x_start+0,_y_start+3,_x_start+6,_y_start+3,_symbol_bright)
+        self.line(_x_start+8,_y_start+3,_x_start+8,_y_start+3,_symbol_bright)
+        # Row 4
+        self.line(_x_start+0,_y_start+4,_x_start+1,_y_start+4,_symbol_bright)
+        self.line(_x_start+6,_y_start+4,_x_start+8,_y_start+4,_symbol_bright)
+        # Row 5
+        self.line(_x_start+0,_y_start+5,_x_start+5,_y_start+5,_symbol_bright)
+        self.line(_x_start+7,_y_start+5,_x_start+8,_y_start+5,_symbol_bright)
+        # Row 6
+        self.line(_x_start+0,_y_start+6,_x_start+1,_y_start+6,_symbol_bright)
+        self.line(_x_start+5,_y_start+6,_x_start+8,_y_start+6,_symbol_bright)
+        # Row 7
+        self.line(_x_start+1,_y_start+7,_x_start+7,_y_start+7,_symbol_bright)
+
+    def DrawNet(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Network logo"
+        # Draw network device
+        self.DrawBox(_x_start+1,_y_start,5,4,_symbol_bright)
+        # Draw connection
+        self.line(_x_start+3,_y_start+5,_x_start+3,_y_start+7,_symbol_bright)
+        # Dtaw network
+        self.line(_x_start,_y_start+7,_x_start+7,_y_start+7,_symbol_bright)
+
+    def DrawWifi(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Wifi logo"
+        # Draw base
+        self.line(_x_start+1,_y_start+7,_x_start+5,_y_start+7,_symbol_bright)
+        # Draw antena
+        self.line(_x_start+3,_y_start+1,_x_start+3,_y_start+6,_symbol_bright)
+        # Draw transmission
+        self.line(_x_start+1,_y_start+0,_x_start+1,_y_start+3,_symbol_bright)
+        self.line(_x_start+5,_y_start+0,_x_start+5,_y_start+3,_symbol_bright)
+
+    def DrawRepeat(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Repeat logo"
+        # Draw Right Arrow
+        self.line(_x_start+5,_y_start+0,_x_start+5,_y_start+4,_symbol_bright)
+        self.line(_x_start+6,_y_start+1,_x_start+6,_y_start+3,_symbol_bright)
+        # Draw Left Arrow
+        self.line(_x_start+1,_y_start+5,_x_start+1,_y_start+7,_symbol_bright)
+        self.line(_x_start+2,_y_start+4,_x_start+2,_y_start+8,_symbol_bright)
+        # Draw top arrow stick
+        self.line(_x_start+1,_y_start+2,_x_start+7,_y_start+2,_symbol_bright)
+        # Draw bottom arrow stick
+        self.line(_x_start+0,_y_start+6,_x_start+6,_y_start+6,_symbol_bright)
+
+    def DrawRepeatOne(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Repeat one logo"
+        # Draw Right Arrow
+        self.line(_x_start+5,_y_start+0,_x_start+5,_y_start+4,_symbol_bright)
+        self.line(_x_start+6,_y_start+1,_x_start+6,_y_start+3,_symbol_bright)
+        # Draw Left Arrow
+        self.line(_x_start+1,_y_start+5,_x_start+1,_y_start+7,_symbol_bright)
+        self.line(_x_start+2,_y_start+4,_x_start+2,_y_start+8,_symbol_bright)
+        # Draw top arrow stick
+        self.line(_x_start+1,_y_start+2,_x_start+7,_y_start+2,_symbol_bright)
+        # Draw bottom arrow stick
+        self.line(_x_start+0,_y_start+6,_x_start+4,_y_start+6,_symbol_bright)
+        # Draw number 1
+        self.line(_x_start+6,_y_start+6,_x_start+6,_y_start+8,_symbol_bright)
+
+    def DrawShuffle(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Shuffle logo"
+        # Draw Down Right Arrow
+        self.line(_x_start+7,_y_start+5,_x_start+7,_y_start+6,_symbol_bright)
+        self.line(_x_start+5,_y_start+7,_x_start+6,_y_start+7,_symbol_bright)
+        # Draw Down Right stick
+        self.line(_x_start+0,_y_start+0,_x_start+7,_y_start+7,_symbol_bright)
+        # Draw Up Left Arrow
+        self.line(_x_start+7,_y_start+1,_x_start+7,_y_start+2,_symbol_bright)
+        self.line(_x_start+5,_y_start+0,_x_start+6,_y_start+0,_symbol_bright)
+        # Draw Up Left stick
+        self.line(_x_start+0,_y_start+7,_x_start+7,_y_start+0,_symbol_bright)
+
+    def DrawRepeatShuffle(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Shuffle repeat logo"
+        # Draw Bottom Right Arrow
+        self.line(_x_start+7,_y_start+5,_x_start+7,_y_start+6,_symbol_bright)
+        self.line(_x_start+5,_y_start+7,_x_start+6,_y_start+7,_symbol_bright)
+        # Draw Down Right stick
+        self.line(_x_start+0,_y_start+0,_x_start+7,_y_start+7,_symbol_bright)
+        # Draw Bottom Left Arrow
+        self.line(_x_start+0,_y_start+5,_x_start+0,_y_start+6,_symbol_bright)
+        self.line(_x_start+1,_y_start+7,_x_start+2,_y_start+7,_symbol_bright)
+        # Draw Top Right Arrow
+        self.line(_x_start+7,_y_start+1,_x_start+7,_y_start+2,_symbol_bright)
+        self.line(_x_start+5,_y_start+0,_x_start+6,_y_start+0,_symbol_bright)
+        # Draw Up Left stick
+        self.line(_x_start+0,_y_start+7,_x_start+7,_y_start+0,_symbol_bright)
+        # Draw Top Left Arrow
+        self.line(_x_start+0,_y_start+1,_x_start+0,_y_start+2,_symbol_bright)
+        self.line(_x_start+2,_y_start+0,_x_start+1,_y_start+0,_symbol_bright)
+
+    def DrawSequence(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Sequence logo"
+        # Draw 1st Right Arrow
+        self.line(_x_start+1,_y_start+1,_x_start+1,_y_start+5,_symbol_bright)
+        self.line(_x_start+2,_y_start+2,_x_start+2,_y_start+4,_symbol_bright)
+        # Draw 2nd Right Arrow
+        self.line(_x_start+5,_y_start+1,_x_start+5,_y_start+5,_symbol_bright)
+        self.line(_x_start+6,_y_start+2,_x_start+6,_y_start+4,_symbol_bright)
+        # Draw centre stick
+        self.line(_x_start+0,_y_start+3,_x_start+7,_y_start+3,_symbol_bright)
+
+    def DrawLeftChannel(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Left channel logo"
+        # Draw 1st Right Arrow
+        self.line(_x_start+0,_y_start+1,_x_start+0,_y_start+6,_symbol_bright)
+        self.line(_x_start+2,_y_start+2,_x_start+2,_y_start+5,_symbol_bright)
+        self.line(_x_start+4,_y_start+3,_x_start+4,_y_start+4,_symbol_bright)
+        self.line(_x_start+6,_y_start+3,_x_start+6,_y_start+4,_symbol_bright)
+        self.line(_x_start+7,_y_start+3,_x_start+7,_y_start+4,_symbol_bright)
+    
+    def DrawRightChannel(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Right channel logo"
+        # Draw 1st Right Arrow
+        self.line(_x_start+0,_y_start+3,_x_start+0,_y_start+4,_symbol_bright)
+        self.line(_x_start+1,_y_start+3,_x_start+1,_y_start+4,_symbol_bright)
+        self.line(_x_start+3,_y_start+3,_x_start+3,_y_start+4,_symbol_bright)
+        self.line(_x_start+5,_y_start+2,_x_start+5,_y_start+5,_symbol_bright)
+        self.line(_x_start+7,_y_start+1,_x_start+7,_y_start+6,_symbol_bright)
+ 
+    def DrawStereoChannel(self,_x_start,_y_start,_symbol_bright) -> None:
+        "Stereo logo"
+        # Draw 1st Right Arrow
+        self.pixel(_x_start+1,_y_start+0,_symbol_bright)
+        self.pixel(_x_start+1,_y_start+7,_symbol_bright)
+        self.line(_x_start+0,_y_start+1,_x_start+0,_y_start+6,_symbol_bright)
+        self.line(_x_start+2,_y_start+2,_x_start+2,_y_start+5,_symbol_bright)
+        self.line(_x_start+3,_y_start+3,_x_start+3,_y_start+4,_symbol_bright)
+        self.line(_x_start+4,_y_start+3,_x_start+4,_y_start+4,_symbol_bright)
+        self.line(_x_start+5,_y_start+2,_x_start+5,_y_start+5,_symbol_bright)
+        self.line(_x_start+7,_y_start+1,_x_start+7,_y_start+6,_symbol_bright)
+        self.pixel(_x_start+6,_y_start+0,_symbol_bright)
+        self.pixel(_x_start+6,_y_start+7,_symbol_bright)
+
+    def Main(self,_amp):
+        "Display selected amplifier details - Max 32 long"
+
+        self.fill(0)
+        _normal_brightness = 0xff
+        _dim_brightness = 0x06
+        _unknown_brightness = 0x01
+        _min_brightness = 0x01
+
+        _name = _amp.readAttribute("NAM")
+        if not _name:
+            _name = ".searching"
+            self.text(_name,0,0,_unknown_brightness)
+        else:
+            self.text(_name,0,0,_dim_brightness)
+
+        _source = _amp.readAttribute("SRC")
+        if not _amp.readAttribute("SRC"):
+            _source = ""
+        
+        _feed = _amp.readAttribute("VND")
+        if not _amp.readAttribute("VND"):
+            _feed = ""
+
+        _title = _amp.readAttribute("TIT")
+        if not _amp.readAttribute("TIT"):
+            _title = ""
+
+        _artist = _amp.readAttribute("ART")
+        if not _amp.readAttribute("ART"):
+            _artist = ""
+
+        _album = _amp.readAttribute("ALB")
+        if not _amp.readAttribute("ALB"):
+            _album = ""
+
+        _play = _amp.readAttribute("PLA")
+        if not _amp.readAttribute("PLA"):
+            _play = ""
+        
+        _loop = _amp.readAttribute("LPM")
+        # LPM: {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE};
+        if not _amp.readAttribute("LPM"):
+            _loop = ""
+
+        _volume = _amp.readAttribute("VOL")
+        if not _amp.readAttribute("VOL"):
+            _volume = 0
+
+        _ethernet = _amp.readAttribute("ETH")
+        if not _amp.readAttribute("ETH"):
+            _ethernet = 0
+
+        _wifi = _amp.readAttribute("WIF")
+        if not _amp.readAttribute("WIF"):
+            _wifi = 0
+
+        _channels = _amp.readAttribute("CHN")
+        if not _amp.readAttribute("CHN"):
+            _channels = 0
+
+        _position = _amp.readAttribute("ELP")
+        if not _position:
+            _position = 0
+        if _amp.readAttribute("PLA"):
+            if _position == "0/0":
+                _position = "0"
+        try:
+            _position_percent = eval("(" + str(_position) + ")")
+        except:
+            _position_percent = 0
+        _time = int(str(_position).split("/",1)[0])/1000
+        _minutes = floor(_time/60)
+        _seconds = floor(_time-(_minutes*60))
+        # else:
+        #     _minutes = floor (secondsSinceTick(_amp.TrackStarted)/60)
+        #     _seconds = floor(secondsSinceTick(_amp.TrackStarted)-(_minutes*60))
+
+        _first_icon_start=80
+        _icon_gap=12
+
+
+        if _ethernet == "1":
+            self.DrawNet(_first_icon_start+(_icon_gap*1),0,_dim_brightness)
+        else:
+            self.DrawNet(_first_icon_start+(_icon_gap*1),0,_min_brightness)
+
+        if _wifi == "1":
+            self.DrawWifi(_first_icon_start+(_icon_gap*2),0,_dim_brightness)
+        else:
+            self.DrawWifi(_first_icon_start+(_icon_gap*2),0,_min_brightness)
+
+        if _feed == "Spotify":
+            self.DrawSpotify(_first_icon_start+(_icon_gap*3),0,_dim_brightness)
+        if _feed == "Spotify":
+            self.DrawSpotify(_first_icon_start+(_icon_gap*3),0,_dim_brightness)
+        else:
+            self.DrawSpotify(_first_icon_start+(_icon_gap*3),0,_min_brightness)
+
+        # Loop symbol  {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE};
+        if _loop == "REPEATALL":
+            self.DrawRepeat(_first_icon_start+(_icon_gap*4),0,_dim_brightness)
+        elif _loop == "REPEATONE":
+            self.DrawRepeatOne(_first_icon_start+(_icon_gap*4),0,_dim_brightness)
+        elif _loop == "SHUFFLE":
+            self.DrawShuffle(_first_icon_start+(_icon_gap*4),0,_dim_brightness)
+        elif _loop == "REPEATSHUFFLE":
+            self.DrawRepeatShuffle(_first_icon_start+(_icon_gap*4),0,_dim_brightness)
+        elif _loop == "SEQUENCE":
+            self.DrawSequence(_first_icon_start+(_icon_gap*4),0,_dim_brightness)
+        else:
+            self.DrawSequence(_first_icon_start+(_icon_gap*4),0,_min_brightness)
+
+
+        if _channels == "L":
+            self.DrawLeftChannel(_first_icon_start+(_icon_gap*5),0,_dim_brightness)
+        elif _channels == "R":
+            self.DrawRightChannel(_first_icon_start+(_icon_gap*5),0,_dim_brightness)
+        elif _channels == "S":
+            self.DrawStereoChannel(_first_icon_start+(_icon_gap*5),0,_dim_brightness)
+        else:
+            self.DrawStereoChannel(_first_icon_start+(_icon_gap*5),0,_min_brightness)
+
+        # Play / Pause symbol
+        if _play == "1":
+            self.DrawPlay(_first_icon_start+(_icon_gap*6),0,6,7,_dim_brightness)
+        else:
+            self.DrawPause(_first_icon_start+(_icon_gap*6),0,6,7,_dim_brightness)
+
+
+        self.text(str(_minutes)+":"+str(_seconds), 180,0,_dim_brightness)
+        self.ProgressBar(220,1,35,2,"Horizontal","Right",_position_percent,_min_brightness,_dim_brightness)
+        self.ProgressBar(250,10,2,45,"Vertical","Up",int(_volume)/100,_min_brightness,_dim_brightness)
+        
+        self.text(_title,0,20,_normal_brightness)
+        self.text(_artist,0,30,_dim_brightness)
+        self.text(_album,0,40,_dim_brightness)
+
+        #self.text("123456789-123456789-123456789-123456789-",0,55,_dim_brightness)
+        self.show()
+
 
 # Control a Multiplexer
 class Multiplexer:
     "Generic multiplexer controls"
 
     def __init__(self, S0, S1, E, Max, signal):
-        self.S0 = machine.Pin(S0, machine.Pin.OUT)
-        self.S1 = machine.Pin(S1, machine.Pin.OUT)
-        self.E = machine.Pin(E, machine.Pin.OUT)
-        self.signal = machine.Pin(signal)
+        self.S0 = Pin(S0, Pin.OUT)
+        self.S1 = Pin(S1, Pin.OUT)
+        self.E = Pin(E, Pin.OUT)
+        #self.signal = Pin(signal)          ## Not needed for UART
         self._reset()
         self.current_bits = "00"
         self.state = False
@@ -525,10 +1099,8 @@ class UART_Communication(UART_Multiplexer):
         self.Idle = True                                                            # Currently in use and communitaing
         self.MaxQueueWaitSeconds = 5                                               # Longest a request can wait on the quque
         self.MaxBusyQueueWaitSeconds = 3                                           # Longest a request can wait on a busy queue
-        self.MaxWaitResponse = 3                                                    # How long to wait for a UART response
-        self.QueuedRequests = {}                                                    # -- Not sure how this will be implemented yet
+        self.QueuedRequests = {}                                                    # Queries requests
         self.ResponseBuffer = {}                                                    # Responses populated in this buffer
-        self.LastProcessedRequest = 0                                               # Timestamp of last processed request
         self.BackPresure = False                                                    # Are High priority requests not making it onto the queue
         self.LastBackPresure = 0                                                    # When was back pressure last applied
         self.BackPresureRelease = 3                                                 # After how long to take of back presure
@@ -536,8 +1108,7 @@ class UART_Communication(UART_Multiplexer):
         self.BackPresureThreshold = 2                                               # Adjust soft limit
         self.LastBackPresureThreshold = 0                                           # When was the limit last adjusted
         
-        self.uart = UART(1, baudrate=115200, bits=8, parity=None, stop=1, tx=Pin(Pin_UART_TX), rx=Pin(Pin_UART_RX))
-
+        self.uart = UART(Pico_Channel_UART, baudrate=115200, bits=8, parity=None, stop=1, tx=Pin(Pin_UART_TX), rx=Pin(Pin_UART_RX))
 
     # UART NON-Threaded worker
     def sendNextCommandFromQueue(self):
@@ -589,7 +1160,7 @@ class UART_Communication(UART_Multiplexer):
     # UART Threaded worker
     def THREADsendNextCommandFromQueue(self):
         "SECOND THREAD: Check message request queue and send"
-        lastProcessed = utime.ticks_ms()
+        lastProcessed = ticks_ms()
 
         while True:
             try:
@@ -624,7 +1195,7 @@ class UART_Communication(UART_Multiplexer):
                         # Select Multiplexer
                         self.setLiveChannel(self.getRequestAmp(request))
                         # Send message
-                        self.ResponseBuffer[request]=self.transmitRequest(self.getRequestMessage(request))
+                        self.ResponseBuffer[request]=self.transmitRequest(self.getRequestMessage(request),1)
                         # Push response into buffer
                         self.setRequestComplete(request,True)
                         print(".")
@@ -638,15 +1209,9 @@ class UART_Communication(UART_Multiplexer):
         # Anything in the buffer 
         # print("{" + str(self.uart.read()),end='}')
         self.uart.write(message)
-        utime.sleep(wait)
+        sleep(wait)
         # read line into buffer
         response = self.uart.read()
-        # print(str(response)[2:])
-        # if response == None:
-        #     utime.sleep(0.5)
-        #     response = self.uart.read()
-
-        # print("[" + str(self.uart.read()),end=']')
         return str(response)[2:][:-6]
 
     def removeFromQueue(self,request):
@@ -856,7 +1421,7 @@ class UART_Communication(UART_Multiplexer):
         _firstFound = -1
         # Check if starts with control chars, and remove
         for i in range(len(self.ResponseBuffer[request])):
-            m = ure.match('[A-Z]',self.ResponseBuffer[request][i])
+            m = match('[A-Z]',self.ResponseBuffer[request][i])
             if m and _firstFound < 0:
                 _firstFound = i
         # print(str(_firstFound) + "@", end='')
@@ -908,9 +1473,9 @@ class UART_Communication(UART_Multiplexer):
 ### Configure button interupts
 
 # print("Configuring button interupts...", end= '')
-# Button_Source_Cycle.irq(trigger=machine.Pin.IRQ_RISING, handler=Button_Handler)
+# Button_Source_Cycle.irq(trigger=Pin.IRQ_RISING, handler=Button_Handler)
 # print("source", end = '')
-# Button_Amp_Cycle.irq(trigger=machine.Pin.IRQ_RISING, handler=Button_Handler)
+# Button_Amp_Cycle.irq(trigger=Pin.IRQ_RISING, handler=Button_Handler)
 # print(",amp", end = '')
 # print(" done")
 # print()
@@ -930,6 +1495,14 @@ class UART_Communication(UART_Multiplexer):
 
 print("STARTING")
 
+# print("Initializing SPI Display")
+# spi = SPI(0, baudrate=16000000,polarity=0, phase=0, sck=Pin(2), mosi=Pin(3), miso=Pin(0))
+# dc=Pin(5,Pin.OUT)
+# cs=Pin(1,Pin.OUT)
+# res=Pin(4,Pin.OUT)
+# oled=SSD1322_SPI(256,64,spi,dc,cs,res)
+# oled.fill(0)
+
 # Initiate Primary Object
 MA = MultiAmp()
 
@@ -937,14 +1510,18 @@ MA = MultiAmp()
 UART_Com = UART_Communication()
 
 # Find Amps and create the objects
-MA.ampDiscovery(1,1,UART_Com)
+OLED = Display()
+OLED.text("Searching for Amplifiers",20,30,0xff)
+OLED.show()
 
-###### Spawning Second Thread ######
+MA.ampDiscovery(1,1,UART_Com,OLED)
+
+###### Spawning Second Thread (or not) ######
 
 if Flag_UART_Threading_Enabled == True:
     print("SPAWN")
-    _thread.start_new_thread(UART_Com.THREADsendNextCommandFromQueue, ())
-    baton = _thread.allocate_lock()
+    start_new_thread(UART_Com.THREADsendNextCommandFromQueue, ())
+    baton = allocate_lock()
 
 MA.refreshAllAmpStatus(UART_Com)
 
@@ -987,8 +1564,9 @@ while True:
         lastProcessed = tickNow()
         UART_Com.sendNextCommandFromQueue()
 
-    if secondsSinceTick(lastAmpPrint) > 10:
+    if secondsSinceTick(lastAmpPrint) > 1:
         lastAmpPrint = tickNow()
         print("Number of Amps: " + str(len(MA.Amplifiers)))
         for ampNumber in range(len(MA.Amplifiers)):
             MA.Amplifiers[ampNumber].printAmp()
+            OLED.Main(MA.Amplifiers[MA.getAmpSelected()])
