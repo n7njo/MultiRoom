@@ -1,60 +1,33 @@
 # Display Pico
 
 # Feature to dos
-    # Hardware
-        # Power LED from PSU
-        # 5v Power from PSU via Power Buck
-        # Rear USB port for connecting to Pico
-        # Rear holes for Speaker connections
-        # Power noise filters
-        # Audio out from each amp to digital signal
-        # Line out from master amp
-        # Connect Line in from master amp
-        # Attach DVD drive cover - Maybe for Antenas
-        # RGB LED in VNR light - Increase size of hole
-        # Fix LED light in power switch
-        # IR mount
-        # Network switch mount & power
-        # Multiplexer for inbound LineIn, selectable to which amp
 
     # Software
-        # Source RGB LED for currently selected amp "VNR", with PWM to colour fade
-        # Read 7 buttons for Source"VNR", Eject"SwitchAmp", Play, Pause, Stop, Forward, Back
-        # IR to receive commands
-        # Visual to see if sound playing from each amp
-        # Reset amp option
-        # LED to show queue temperature
+        # See the other amps on the display
+        # Animation to show progress - Visual to see if sound playing from each amp
+        # Brightness control
 
     # Questions?
         # What output can be seen from the Amp to determine sound actually being played
 
-    # Answers
-        # Primary thread recieves the interupt for the botton press, what happens if in the middle of a UART
-        # Thought is for the UART to be on 2nd thread so conversations not interupted by button presses
-        # PIO is a very low level ablity to write a custom messaging protocal
-
-
 #import utime
-from utime import sleep_ms, sleep, ticks_us, ticks_ms, ticks_diff
-#import _thread
-from _thread import start_new_thread, allocate_lock
-from machine import UART,Pin,SPI
-#import ure
+from utime import sleep_ms, sleep, ticks_us, ticks_diff
+from machine import UART, Pin, SPI, PWM
 from ure import match
-#import ubinascii
-from ubinascii import unhexlify
-#import time
 import framebuf
-#from framebuf import FrameBuffer, framebuf
 from math import floor
 
 
 ### Configure Pins
 # Pin numbers
-Pin_LED_Green = 13          # Need to confirm if PWM capable
-Pin_LED_Blue = 15           # Need to confirm if PWM capable
-Pin_LED_RED = 14            # Need to confirm if PWM capable
-Pin_LED_Internal = 25       #
+Pin_LED_Source_Red = 15          
+Pin_LED_Source_Green = 14            
+Pin_LED_Source_Blue = 13 
+Pin_LED_Power_Red = 12          
+Pin_LED_Power_Green = 11            
+Pin_LED_Power_Blue = 10 
+
+Pin_LED_Internal = 25       
 
 Pin_DISPLAY_UART_TX = 8
 Pin_DISPLAY_UART_RX = 9
@@ -68,13 +41,12 @@ Pin_SPI_SCLK = 2            # SPI Clock
 
 Pico_DISPLAY_UART = 1       # Which Pico coms channel will be used
 
-
-
 # LEDs
 LED_Internal = Pin(Pin_LED_Internal, Pin.OUT)
-LED_Green = Pin(Pin_LED_Green, Pin.OUT)
-LED_Blue = Pin(Pin_LED_Blue, Pin.OUT)
 
+PWM_LED_Frequency = 1000
+
+LED_Power_Change_Rate = 2
 
 # Buttons
 # Button_Source_Cycle = Pin(Pin_BUT_Source_Cycle, Pin.IN, Pin.PULL_UP)
@@ -85,12 +57,21 @@ Limit_UART_Max_Queue_Length = 10                                                
 Limit_UART_Throttling_Queue_Length = 10                                                      # Throttling queue size if Low requests are impacting
 Limit_UART_Multiplexer_Max_Channels = 3                                                    # How many channels does the multiplexer have
 Limit_UART_Multiplexer_Max_Minutes_Looking = 10                                             # Max minutes to look for channels in available
+Limit_LED_PWM_Upper_Limit = 65535
+Limit_LED_PWM_Lower_Limit = 0
 
-# Flags
-Flag_UART_Threading_Enabled = False                                                            # Can the UART queue messages
+# Flags                                                        # Can the UART queue messages
 Flag_System_RedLine = False
 Flag_Display_Probe_Toggle_Blink = True
 Flag_Display_Probe_Blink_On = True
+
+# Debugging
+
+Debug_Queue = False
+Debug_Display_UART = False
+Debug_LED = False
+Debug_Amp_UART_Parse = False
+Debug_Amp = False
 
 # Common Functions
 def tickNow():
@@ -108,7 +89,168 @@ def tickSinceSeconds(_seconds):
     "What was the timestamp this number of seconds ago"
     return tickNow() - (_seconds*1000000)
 
+# Timing variables
 
+lastPrune = tickNow()
+lastParse = tickNow()
+lastProcessed = tickNow()
+
+lastQueuePrint = tickNow()
+lastAutoGenerateLow = tickNow()
+lastCheckAllStatus = tickNow()
+lastUnknownBlink = tickNow()
+lastMissingCheck = tickNow()
+
+lastAmpPrint = tickNow()
+
+lastLEDBrightness = tickNow()
+
+# LED controller class
+class Display_LED:
+    "Display LED object"
+
+    def __init__(self) -> None:
+        global Limit_LED_PWM_Lower_Limit, Limit_LED_PWM_Upper_Limit, LED_Power_Change_Rate, PWM_LED_Frequency
+        global Pin_LED_Power_Red, Pin_LED_Power_Green, Pin_LED_Power_Blue, Pin_LED_Source_Red, Pin_LED_Source_Green, Pin_LED_Source_Blue
+
+        # Initiating LED
+
+        self.lastLEDBrightness = tickNow()
+        self.LED_Power_Target = [Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit]
+        self.LED_Power_Current = [Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit]
+        self.LED_Source_Target = [Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit]
+        self.LED_Source_Current = [Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit]
+
+        self.LED_Power_Red = Pin(Pin_LED_Power_Red)
+        self.PWM_LED_Power_Red = PWM(self.LED_Power_Red)
+        self.PWM_LED_Power_Red.freq(PWM_LED_Frequency)
+
+        self.LED_Power_Green = Pin(Pin_LED_Power_Green)
+        self.PWM_LED_Power_Green = PWM(self.LED_Power_Green)
+        self.PWM_LED_Power_Green.freq(PWM_LED_Frequency)
+
+        self.LED_Power_Blue = Pin(Pin_LED_Power_Blue)
+        self.PWM_LED_Power_Blue = PWM(self.LED_Power_Blue)
+        self.PWM_LED_Power_Blue.freq(PWM_LED_Frequency)
+
+        self.PWM_LED_Power_Red.duty_u16(self.LED_Power_Current[0])
+        self.PWM_LED_Power_Green.duty_u16(self.LED_Power_Current[1])
+        self.PWM_LED_Power_Blue.duty_u16(self.LED_Power_Current[2])
+
+        self.LED_Source_Red = Pin(Pin_LED_Source_Red)
+        self.PWM_LED_Source_Red = PWM(self.LED_Source_Red)
+        self.PWM_LED_Source_Red.freq(PWM_LED_Frequency)
+
+        self.LED_Source_Green = Pin(Pin_LED_Source_Green)
+        self.PWM_LED_Source_Green = PWM(self.LED_Source_Green)
+        self.PWM_LED_Source_Green.freq(PWM_LED_Frequency)
+
+        self.LED_Source_Blue = Pin(Pin_LED_Source_Blue)
+        self.PWM_LED_Source_Blue = PWM(self.LED_Source_Blue)
+        self.PWM_LED_Source_Blue.freq(PWM_LED_Frequency)
+
+        self.PWM_LED_Source_Red.duty_u16(self.LED_Source_Current[0])
+        self.PWM_LED_Source_Green.duty_u16(self.LED_Source_Current[1])
+        self.PWM_LED_Source_Blue.duty_u16(self.LED_Source_Current[2])
+
+        # Red
+        #LED_Power_Target = [Limit_LED_PWM_Upper_Limit,Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit]
+        # Green
+        #LED_Power_Target = [Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Upper_Limit,Limit_LED_PWM_Lower_Limit]
+        # Blue
+        self.LED_Power_Target = [Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Upper_Limit]
+        self.LED_Source_Target = [Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Lower_Limit,Limit_LED_PWM_Upper_Limit]
+
+    def LEDBrightness(self,_current,_target,_PWM_LED_Red,_PWM_LED_Green,_PWM_LED_Blue,_which):
+
+        ##if Debug_LED: print("PowerBright")
+
+        if Debug_LED: print(str(_which) + "Current:> " + str(_current))
+        if Debug_LED: print(str(_which) + "Target:> " + str(_target))
+        for _colour in range(0,3):
+            if _colour == 0: _colour_name = "Red"
+            elif _colour == 1: _colour_name = "Green"
+            elif _colour == 2: _colour_name = "Blue"
+            ##if Debug_LED: print(str(_colour_name) + " C:> " + str(_current[_colour]) + " T:> " + str(LED_Power_Target[_colour]))
+
+            # Needs a change
+            if (_target[_colour] != _current[_colour]):
+                if Debug_LED: print(str(_colour_name) + " difference:> ")
+
+                # Going up
+                if (_target[_colour] > _current[_colour]):
+                    _difference = _target[_colour] - _current[_colour]
+                    _percent_done = 1 - (_difference/Limit_LED_PWM_Upper_Limit)
+                    _change_by = int((_percent_done/LED_Power_Change_Rate) * Limit_LED_PWM_Upper_Limit ) + 1
+                    if (_change_by > _difference):
+                        _current[_colour] = _target[_colour]
+                    else:
+                        _current[_colour] = _current[_colour] + _change_by
+                    
+                    if Debug_LED: print(str(_colour_name) + ":> " + str(_current[_colour]) + " -> " + str(_target[_colour]) + "(up by " + str(_change_by) + ")")
+                # Going down
+                if (_target[_colour] < _current[_colour]):
+                    _difference = _current[_colour] - _target[_colour]
+                    _percent_done = 1 - (_difference/Limit_LED_PWM_Upper_Limit)
+                    _change_by = int((_percent_done/LED_Power_Change_Rate) * Limit_LED_PWM_Upper_Limit ) + 1
+
+                    if (_change_by > _difference):
+                        _current[_colour] = _target[_colour]
+                    else:
+                        _current[_colour] = _current[_colour] - _change_by
+
+                    if Debug_LED: print(str(_colour_name) + ":> " + str(_current[_colour]) + " -> " + str(_target[_colour]) + "(down by " + str(_change_by) + ") ")
+
+        _PWM_LED_Red.duty_u16(_current[0])
+        _PWM_LED_Green.duty_u16(_current[1])
+        _PWM_LED_Blue.duty_u16(_current[2])
+
+    def SetLEDColour(self,_target,_colour,_mutedby=1):
+        if _colour == "Red":
+            _target[0]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+            _target[1]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+            _target[2]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+
+        elif _colour == "Green":
+            _target[0]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+            _target[1]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+            _target[2]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+
+        elif _colour == "Blue":
+            _target[0]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+            _target[1]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+            _target[2]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+
+        elif _colour == "Cyan":
+            _target[0]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+            _target[1]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+            _target[2]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+
+        elif _colour == "Yellow":
+            _target[0]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+            _target[1]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+            _target[2]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+
+        elif _colour == "Purple":
+            _target[0]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+            _target[1]=int(Limit_LED_PWM_Lower_Limit/_mutedby)
+            _target[2]=int(Limit_LED_PWM_Upper_Limit/_mutedby)
+
+    def LEDColour(self,_target,_which):
+        if _which == "Source":
+            if Amplifier.readAttribute("SRC") == "NET":
+                self.SetLEDColour(_target,"Cyan", 10)
+            elif Amplifier.readAttribute("SRC") == "BT":
+                self.SetLEDColour(_target,"Blue", 10)
+            elif Amplifier.readAttribute("SRC") == "LINE-IN":
+                self.SetLEDColour(_target,"Green", 10)
+            elif Amplifier.readAttribute("SRC") == "OPT":
+                self.SetLEDColour(_target,"Red", 10)
+            elif Amplifier.readAttribute("SRC") == "USBPLAY":
+                self.SetLEDColour(_target,"Yellow", 10)
+            else:
+                self.SetLEDColour(_target,"Purple", 10)
+                
 # Amp status object
 class Amp:
     "All the current status details about the Amp"
@@ -180,7 +322,7 @@ class Amp:
         # Already has the request in the queue
         if "TIT" in _requests_in_queue:
             return
-        if self.readAttribute("TIT") == None:
+        if self.readAttribute("TIT") == None and self.readAttribute("PLA") == "1":
             self.requestUART(_ampuart,"TIT")
             return
 
@@ -227,6 +369,13 @@ class Amp:
         if self.readAttribute("ETH") == None:
             self.requestUART(_ampuart,"ETH")
             return
+    
+        # Already has the request in the queue
+        if "SRC" in _requests_in_queue:
+            return
+        if self.readAttribute("SRC") == None:
+            self.requestUART(_ampuart,"SRC")
+            return
 
         # print("PLA:> " + str(self.readAttribute("PLA")) + " ELP:> " + str(self.readAttribute("ELP")))
         # if self.readAttribute("PLA") == "None" and self.readAttribute("ELP") != "0":
@@ -261,13 +410,6 @@ class Amp:
     def readAttribute(self,_key):
        # print("Attributes: " + str(self.Attributes))
         if _key in self.Attributes.keys():
-
-            # No longer need to handle Hex
-            # if _key == "NAM":
-            #     return unhexlify(self.Attributes[_key]).decode("ASCII")
-            # print("Read>" + _key, end=' ')
-            # _value = self.Attributes[_key]
-            # print("Read:" + "'" + str(_value) + "'")
             return self.Attributes[_key]
         else:  
             return None
@@ -308,21 +450,7 @@ class Amp:
         # print("Upgrading:" + str(self.Upgrading), end='  |  ')
         print("----------------------------------------------")
 
-
-
-# LED control
-# class LED:
-#     "Control of LEDs, currently only Source"
-
-#     def __init__(self) -> None:
-#         self.CurrentColour = "Off"
-#         self.NextColour = ""
-
-#     def matchSourcetoColour(self):
-#         "If needed match the LED colour to the source colour"
-
-# OLED Display
-
+# Display chip
 class SSD1322:
     def __init__(self, width=256, height=64):
         self.width = width
@@ -473,6 +601,7 @@ class SSD1322:
     def write_data(self):
         raise NotImplementedError
 
+# Communication with the display chip over SPI
 class SSD1322_SPI(SSD1322):
     def __init__(self, width, height, spi, dc,cs,res):
         self.spi = spi
@@ -508,6 +637,7 @@ class SSD1322_SPI(SSD1322):
             self.spi.write(bytearray([aData]))
         self.cs(1)
 
+# Display functions
 class Display(SSD1322_SPI):
     "Control of Display"
 
@@ -522,6 +652,7 @@ class Display(SSD1322_SPI):
         self.fill(0)
         self.text(_message,20,30,0xff)
         self.show()
+        DLED.SetLEDColour(DLED.LED_Power_Target,"Red", 1)
 
     def ProgressBar(self,_x_start,_y_start,_x_width,_y_height,_orientation,_direction,_current_percent,_box_bright,_line_bright):
         "Draw progress bar with percent completed"
@@ -573,28 +704,6 @@ class Display(SSD1322_SPI):
         self.DrawBox(_x_start+int(_x_width/3)*2,_y_start,int(_x_width/3),_y_height,_symbol_bright)
 
     def DrawSpotify(self,_x_start,_y_start,_symbol_bright) -> None:
-        "Spotify logo"
-        # Row 1
-        self.line(_x_start+1,_y_start+1,_x_start+7,_y_start+1,_symbol_bright)
-        # Row 2
-        self.line(_x_start+0,_y_start+2,_x_start+1,_y_start+2,_symbol_bright)
-        self.line(_x_start+7,_y_start+2,_x_start+8,_y_start+2,_symbol_bright)
-        # Row 3
-        self.line(_x_start+0,_y_start+3,_x_start+6,_y_start+3,_symbol_bright)
-        self.line(_x_start+8,_y_start+3,_x_start+8,_y_start+3,_symbol_bright)
-        # Row 4
-        self.line(_x_start+0,_y_start+4,_x_start+1,_y_start+4,_symbol_bright)
-        self.line(_x_start+6,_y_start+4,_x_start+8,_y_start+4,_symbol_bright)
-        # Row 5
-        self.line(_x_start+0,_y_start+5,_x_start+5,_y_start+5,_symbol_bright)
-        self.line(_x_start+7,_y_start+5,_x_start+8,_y_start+5,_symbol_bright)
-        # Row 6
-        self.line(_x_start+0,_y_start+6,_x_start+1,_y_start+6,_symbol_bright)
-        self.line(_x_start+5,_y_start+6,_x_start+8,_y_start+6,_symbol_bright)
-        # Row 7
-        self.line(_x_start+1,_y_start+7,_x_start+7,_y_start+7,_symbol_bright)
-
-    def DrawTuneIn(self,_x_start,_y_start,_symbol_bright) -> None:
         "Spotify logo"
         # Row 1
         self.line(_x_start+1,_y_start+1,_x_start+7,_y_start+1,_symbol_bright)
@@ -740,6 +849,9 @@ class Display(SSD1322_SPI):
 
     def Main(self,_amp):
         "Display selected amplifier details - Max 32 long"
+        
+        ## Normal mode
+        DLED.SetLEDColour(DLED.LED_Power_Target,"Cyan", 10)
 
         self.fill(0)
         _normal_brightness = 0xff
@@ -823,7 +935,6 @@ class Display(SSD1322_SPI):
             _position_percent = 0
             _position = "0"
 
-
         if _play == '1':
             _time = round(secondsSinceTick(_amp.CurrentTrackStarted),0)
             _minutes = int(floor(_time/60))
@@ -846,7 +957,6 @@ class Display(SSD1322_SPI):
         else:
             self.DrawNet(_first_icon_start+(_icon_gap*1),0,_toggle_blink_brightness)
 
-
         if _wifi == "1":
             self.DrawWifi(_first_icon_start+(_icon_gap*2),0,_dim_brightness)
         elif _wifi == "0":
@@ -854,12 +964,14 @@ class Display(SSD1322_SPI):
         else:
             self.DrawWifi(_first_icon_start+(_icon_gap*2),0,_toggle_blink_brightness)
 
-        if _feed == "Spotify":
+        if _feed == "spotify":
             self.DrawSpotify(_first_icon_start+(_icon_gap*3),0,_dim_brightness)
-        elif _feed == "newTuneIn":
-            self.DrawTuneIn(_first_icon_start+(_icon_gap*3),0,_dim_brightness)
-        else:
-            self.text("?",_first_icon_start+(_icon_gap*3),0,_toggle_blink_brightness)
+        elif _feed == "tunein":
+            self.text("T",_first_icon_start+(_icon_gap*3),0,_dim_brightness)
+        if _feed == "amazon":
+            self.text("A",_first_icon_start+(_icon_gap*3),0,_dim_brightness)
+        # else:
+        #     self.text("?",_first_icon_start+(_icon_gap*3),0,_toggle_blink_brightness)
 
         # Loop symbol  {REPEATALL/REPEATONE/REPEATSHUFFLE/SHUFFLE/SEQUENCE};
         if _loop == "REPEATALL":
@@ -905,12 +1017,11 @@ class Display(SSD1322_SPI):
         #self.text("123456789-123456789-123456789-123456789-",0,55,_dim_brightness)
         self.show()
 
-
+# Communications with the Amplifier Pico
 class UART_Communication():
 
     def __init__(self) -> None:
         super().__init__()       
-        self.QueuingEnabled = Flag_UART_Threading_Enabled                             # Toggle to disable queuing
         self.QueueLength = 0                                                        # Current number of requests in the queue            
         self.MaxQueueLength = Limit_UART_Max_Queue_Length                           # Max number of queued UAT requests
         self.ThrottleingQueueLength = Limit_UART_Throttling_Queue_Length                # Throttling queue length for low
@@ -960,7 +1071,7 @@ class UART_Communication():
                             ##print("lowest",end='')
                             request = lowest
                             found = True
-                            print("Found-Q:>" + str(request) + " (" + str(self.getRequestMessage(request)) + ")")
+                            if Debug_Queue: print("Found-Q:>" + str(request) + " (" + str(self.getRequestMessage(request)) + ")")
                         ##else:
                             ##print("request",end='')
                     ##print("****")
@@ -969,21 +1080,21 @@ class UART_Communication():
                 ### Process Request ###
 
                 ###self.printQueue()
-                print("Length-Q:> " + str(self.getRequestQueueLength()))
+                if Debug_Queue: print("Length-Q:> " + str(self.getRequestQueueLength()))
                 # Send message
-                print("PopOff-Q:> " + str(request) + " (" + self.getRequestMessage(request) + ")")
+                if Debug_Queue: print("PopOff-Q:> " + str(request) + " (" + self.getRequestMessage(request) + ")")
                 _response = self.transmitRequest(self.getRequestMessage(request),self.getResponseWait(request))
-                print("Response-M:> " + str(request) + " (" + str(self.getRequestMessage(request)) + ") > " + "[" + str(_response) + "]")
+                if Debug_Amp: print("Response-M:> " + str(request) + " (" + str(self.getRequestMessage(request)) + ") > " + "[" + str(_response) + "]")
                 if _response is not None:
                     # Push response into buffer
                     self.ResponseBuffer[request] = _response
                     self.setRequestComplete(request,True)
-                    print("Length-Q:> " + str(self.getRequestQueueLength()))
+                    if Debug_Queue: print("Length-Q:> " + str(self.getRequestQueueLength()))
                 else:
-                    print("Removed-Q:> " + str(request) + " (" + str(self.getRequestMessage(request)) + ") > " + "[" + str(_response) + "]")
+                    if Debug_Queue: print("Removed-Q:> " + str(request) + " (" + str(self.getRequestMessage(request)) + ") > " + "[" + str(_response) + "]")
                     self.removeFromQueue(request)
 
-                print("Length-Q:> " + str(self.getRequestQueueLength()))
+                if Debug_Queue: print("Length-Q:> " + str(self.getRequestQueueLength()))
                 
 
                 # print("Queue check:" + str(self.ResponseBuffer[request]))
@@ -1001,7 +1112,7 @@ class UART_Communication():
         LED_Internal.high()
         self.displayuart.write(message)
         LED_Internal.low()
-        print("Transmit-M:> " + "(" + str(message) + ")")
+        if Debug_Amp: print("Transmit-M:> " + "(" + str(message) + ")")
         sleep(wait)
         # read line into buffer
         
@@ -1010,41 +1121,28 @@ class UART_Communication():
         # return str(response)[2:][:-6]
 
     def removeFromQueue(self,_request):
-        if Flag_UART_Threading_Enabled == True:
-            baton.acquire() 
-        print("Delete-Q:> " + str(_request))
+        if Debug_Queue: print("Delete-Q:> " + str(_request))
         del self.ResponseBuffer[_request]
         del self.QueuedRequests[_request]
-
-        if Flag_UART_Threading_Enabled == True:
-            baton.release()
 
     def pushToQueue(self,_message,_priority,_wait):
         addedToQueueTicks = tickNow()
         # Lock Variable
-        if Flag_UART_Threading_Enabled == True:
-            baton.acquire()
         # Add request to the queue - True/False flag indicates response complete
         self.QueuedRequests[addedToQueueTicks] = [_message,False,_priority,_wait]
-        print("Added_1-Q:> (" + _message + ")")
+        if Debug_Queue: print("Added_1-Q:> (" + _message + ")")
         # Add placeholder for response
         self.ResponseBuffer[addedToQueueTicks] = [""]
-        if Flag_UART_Threading_Enabled == True:
-            baton.release()
         return addedToQueueTicks
 
     def pushToBothQueues(self,_message,_priority,_wait,_response):
         addedToQueueTicks = tickNow()
         # Lock Variable
-        if Flag_UART_Threading_Enabled == True:
-            baton.acquire()
         # Add request to the queue - True/False flag indicates response complete
-        print("Added_2-Q:>" + " (" + str(_message) + ") > " + "(" + str(_response) + ")")
+        if Debug_Queue: print("Added_2-Q:>" + " (" + str(_message) + ") > " + "(" + str(_response) + ")")
         self.QueuedRequests[addedToQueueTicks] = [_message,True,_priority,_wait]
         # Add placeholder for response
         self.ResponseBuffer[addedToQueueTicks] = [_response]
-        if Flag_UART_Threading_Enabled == True:
-            baton.release()
         return addedToQueueTicks
 
     def getRequestQueueLength(self):
@@ -1085,11 +1183,7 @@ class UART_Communication():
         return priority
 
     def setRequestComplete(self,request,complete):
-        if Flag_UART_Threading_Enabled == True:
-            baton.acquire()
         self.QueuedRequests[request][1]=complete
-        if Flag_UART_Threading_Enabled == True:
-            baton.release()
 
     def requestCommand(self,message="",priority="low",wait=1):
         "Requests an API message to the UART to a particular Amp"
@@ -1185,10 +1279,10 @@ class UART_Communication():
         "Return current queue"
         _count = 0
         for request in self.QueuedRequests:
-            print("Contents-Q:>" + str(request) + ":|" + str(self.QueuedRequests[request][0]) + "," + str(self.QueuedRequests[request][1]) + "," + str(self.QueuedRequests[request][2]) + "| > [" + str(self.ResponseBuffer[request]) + "] ", end='')
+            if Debug_Queue: print("Contents-Q:>" + str(request) + ":|" + str(self.QueuedRequests[request][0]) + "," + str(self.QueuedRequests[request][1]) + "," + str(self.QueuedRequests[request][2]) + "| > [" + str(self.ResponseBuffer[request]) + "] ", end='')
             _count =+ 1
         if _count > 0:
-            print()
+            if Debug_Queue: print()
 
     def getQueue(self):
         "Return the queue"
@@ -1267,7 +1361,7 @@ class UART_Communication():
             #print(bufferRequests[i])
             requestType = bufferRequests[i][:3]
             response = bufferRequests[i][4:]
-            #print("RECEIVED:" + requestType + "#(" + response + ") ",end='')
+            if Debug_Amp_UART_Parse: print("SaveAttrib:> " + requestType + " (" + response + ") ")
             Amplifier.saveAttribute(requestType,response)
 
     def checkUARTForAmpUpdates(self):
@@ -1277,50 +1371,62 @@ class UART_Communication():
             #print(">" + str(response) + "<")
             if str(response)[2:][:-1] != ":;":
                 # Possibly recived a long line of junk
-                if len(str(response)[2:][:-1]) < 40:
-                    print("Recieved-M:> [" + str(response)[2:][:-1] + "]")
+                #if len(str(response)[2:][:-1]) < 40:
+                if Debug_Amp: print("Received-M:> [" + str(response)[2:][:-1] + "]")
+                if bool(match('^[A-Z][A-Z][A-Z]',str(response)[2:][:-1])):
                     self.pushToBothQueues("","Low",0.1,str(response)[2:][:-1])
+
             #return str(response)[2:][:-6]
 
-###### Begin Main ######
+###### Begin Main Program ######
 
-print("STARTING")
+print("Starting Multiroom Amplifier Pico - Display Pico")
+print("************************************************")
+print()
 
+print("Intantiating LED object ...", end= '')
+DLED = Display_LED()
+DLED.SetLEDColour(DLED.LED_Power_Target,"Blue", 12)
+DLED.SetLEDColour(DLED.LED_Source_Target,"Red", 12)
+print("[DONE]")
+
+print("Creating Amplifier object...", end= '')
 Amplifier = Amp()
-print("Amp created")
+print("[DONE]")
 
 # Initiate UART
+print("Initializing UART...", end= '')
 UART_Com = UART_Communication()
-print("UART created")
+print("[DONE]")
 
 # Find Amps and create the objects
+print("Initializing Display...", end= '')
 OLED = Display()
 OLED.show()
-print("Display created")
+Amplifier.saveAttribute("AMP","0")
+Amplifier.saveAttribute("MSG","Initializing...")
+print("[DONE]")
 
-###### Spawning Second Thread (or not) ######
-
-if Flag_UART_Threading_Enabled == True:
-    print("SPAWN")
-    start_new_thread(UART_Com.THREADsendNextCommandFromQueue, ())
-    baton = allocate_lock()
-
-lastPrune = tickNow()
-lastParse = tickNow()
-lastProcessed = tickNow()
-
-lastQueuePrint = tickNow()
-lastAutoGenerateLow = tickNow()
-lastCheckAllStatus = tickNow()
-lastUnknownBlink = tickNow()
-lastMissingCheck = tickNow()
-
-lastAmpPrint = tickNow()
-
+# Main program
+print()
+print("Configuration complete, staring main program...[GO]")
+print()
 
 while True:
 
+    # LED update
+    if secondsSinceTick(lastLEDBrightness) > 0.01:
+        lastLEDBrightness = tickNow()
 
+        # Change Colour if needed
+        DLED.LEDColour(DLED.LED_Power_Target,"Power")
+        DLED.LEDColour(DLED.LED_Source_Target,"Source")
+
+        # Change Brightness
+        DLED.LEDBrightness(DLED.LED_Power_Current,DLED.LED_Power_Target,DLED.PWM_LED_Power_Red,DLED.PWM_LED_Power_Green,DLED.PWM_LED_Power_Blue,"Power")
+        DLED.LEDBrightness(DLED.LED_Source_Current,DLED.LED_Source_Target,DLED.PWM_LED_Source_Red,DLED.PWM_LED_Source_Green,DLED.PWM_LED_Source_Blue,"Source")
+
+    # Is the system very busy
     if Flag_System_RedLine:
         # System running hot
         #print("HOT")
@@ -1336,17 +1442,27 @@ while True:
         lastPrune = tickNow()
         UART_Com.pruneQueue()
 
-    # Print queue
+    # Print message queue
     if secondsSinceTick(lastQueuePrint) > 1:
         lastQueuePrint = tickNow()
         UART_Com.printQueue()
 
+    # Are any attributes missing that would be expectec
     if secondsSinceTick(lastMissingCheck) > 0.3:
         lastMissingCheck = tickNow()
-        Amplifier.missingAttributes(UART_Com)
+
+        if Amplifier.readAttribute("AMP") == "1":
+            Amplifier.missingAttributes(UART_Com)
+        else:
+            Amplifier.requestUART(UART_Com,"AMP")
+
+    # Check all amp status
+    if secondsSinceTick(lastCheckAllStatus) > 5:
+        lastCheckAllStatus = tickNow()
+        Amplifier.requestUART(UART_Com,"WHT")
 
     # Check UART for updates
-    if secondsSinceTick(lastProcessed) > 0.01 and Flag_UART_Threading_Enabled == False:
+    if secondsSinceTick(lastProcessed) > 0.01:
         lastProcessed = tickNow()
         UART_Com.checkUARTForAmpUpdates()
         UART_Com.sendNextCommandFromQueue()
@@ -1354,10 +1470,14 @@ while True:
     # Print amp
     if secondsSinceTick(lastAmpPrint) > 0.1:
         lastAmpPrint = tickNow()
-        #Amplifier.printAmp()
+        #if Amplifier.readAttribute("NAM") != None:
+        if Amplifier.readAttribute("AMP") == "1" and Amplifier.readAttribute("NAM") is not None and Amplifier.readAttribute("NAM") != "":
+            #Amplifier.printAmp()
 
-        ##Amplifier.requestUART(UART_Com,"")
-        OLED.Main(Amplifier)
+            ##Amplifier.requestUART(UART_Com,"")
+            OLED.Main(Amplifier)
+        else:
+            OLED.ImportantMessage(str(Amplifier.readAttribute("MSG")))
 
     # Toggle unknown
     if secondsSinceTick(lastUnknownBlink) > 1:
@@ -1366,3 +1486,4 @@ while True:
             Flag_Display_Probe_Blink_On = False
         else:
             Flag_Display_Probe_Blink_On = True
+

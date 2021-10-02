@@ -18,7 +18,8 @@
 
     # Software
         # Source RGB LED for currently selected amp "VNR", with PWM to colour fade
-        # Read 7 buttons for Source"VNR", Eject"SwitchAmp", Play, Pause, Stop, Forward, Back
+        # Standby control for all amps - from IR
+
         # IR to receive commands
         # Visual to see if sound playing from each amp
         # Reset amp option
@@ -35,25 +36,37 @@
 #import utime
 from utime import sleep_ms, sleep, ticks_us, ticks_ms, ticks_diff
 from _thread import start_new_thread, allocate_lock
-from machine import UART,Pin,SPI
+from machine import UART,Pin
 from ure import match
 from ubinascii import unhexlify
-from math import floor
-import json
+#from ir_rx.test import test
+#from ir_rx.sony import SONY_12, SONY_15, SONY_20
+from ir_rx.sony import SONY_20
+import gc
+#from ir_rx.print_error import print_error  # Optional print of error codes
 
 
 ### Configure Pins
 # Pin numbers
-Pin_LED_Green = 13          # Need to confirm if PWM capable
-Pin_LED_Blue = 15           # Need to confirm if PWM capable
-Pin_LED_RED = 14            # Need to confirm if PWM capable
-Pin_BUT_Amp_Cycle = 16      #
-Pin_BUT_Source_Cycle = 22   #
+Pin_LED_Power_Red = 15          
+Pin_LED_Power_Green = 14            
+Pin_LED_Power_Blue = 13           
+
+        # Read 7 buttons for Source"VNR", Eject"SwitchAmp", Play, Pause, Stop, Forward, Back
+
+Pin_BUT_Play = 16
+Pin_BUT_Pause = 17
+Pin_BUT_Stop = 18
+Pin_BUT_Source_Cycle = 19   #
+Pin_BUT_Previous = 20      #
+Pin_BUT_Next = 21
+Pin_BUT_Amp_Cycle = 22   #
 Pin_LED_Internal = 25       #
 Pin_UART_Multi_Signal = 5  # Mulliplexer Signal     ---- Not needed for UART ????? Why
 Pin_UART_Multi_S1 = 2      # Mutliplexer select Bit 1 
 Pin_UART_Multi_S0 = 3     # Mutliplexer select Bit 0
 Pin_UART_Multi_E = 4       # Mutliplexer Enable
+Pin_IR_Signal = 7           # IR receiver signal 
 Pin_AMP_UART_TX = 0
 Pin_AMP_UART_RX = 1
 Pin_DISPLAY_UART_TX = 8
@@ -64,17 +77,24 @@ Pico_DISPLAY_UART = 1       # Which Pico coms channel will be used for talking w
 
 # LEDs
 LED_Internal = Pin(Pin_LED_Internal, Pin.OUT)
-LED_Green = Pin(Pin_LED_Green, Pin.OUT)
-LED_Blue = Pin(Pin_LED_Blue, Pin.OUT)
 
+# IR
+IR_Signal = Pin(Pin_IR_Signal, Pin.IN)
 
 # Buttons
-# Button_Source_Cycle = Pin(Pin_BUT_Source_Cycle, Pin.IN, Pin.PULL_UP)
-Button_Amp_Cycle = Pin(Pin_BUT_Amp_Cycle, Pin.IN, Pin.PULL_DOWN)
+Button_Amp_Cycle = Pin(Pin_BUT_Amp_Cycle, Pin.IN, Pin.PULL_UP)
+Button_Source_Cycle = Pin(Pin_BUT_Source_Cycle, Pin.IN, Pin.PULL_UP)
+Button_Previous = Pin(Pin_BUT_Previous, Pin.IN, Pin.PULL_UP)
+Button_Next = Pin(Pin_BUT_Next, Pin.IN, Pin.PULL_UP)
+Button_Play = Pin(Pin_BUT_Play, Pin.IN, Pin.PULL_UP)
+Button_Pause = Pin(Pin_BUT_Pause, Pin.IN, Pin.PULL_UP)
+Button_Stop = Pin(Pin_BUT_Stop, Pin.IN, Pin.PULL_UP)
+
+Pin_Pressed = ""                                                                            # Details about a button that's been pressed
 
 # Limits
-Limit_UART_Max_Queue_Length = 5                                                             # Queue size for waiting UART requests
-Limit_UART_Throttling_Queue_Length = 5                                                      # Throttling queue size if Low requests are impacting
+Limit_UART_Max_Queue_Length = 15                                                             # Queue size for waiting UART requests
+Limit_UART_Throttling_Queue_Length = 10                                                      # Throttling queue size if Low requests are impacting
 Limit_UART_Multiplexer_Max_Channels = 3                                                    # How many channels does the multiplexer have
 Limit_UART_Multiplexer_Max_Minutes_Looking = 10                                             # Max minutes to look for channels in available
 Limit_LineIn_Multiplexer_Max_Channels = 4                                                  # Max chanels on the multiplexter for LineIn
@@ -83,7 +103,19 @@ Limit_LineOut_Multiplexer_Max_Channels = 0                                      
 # Flags
 Flag_UART_Threading_Enabled = False                                                            # Can the UART queue messages
 Flag_System_RedLine = False
+Flag_Button_Pressed = False
 
+Found_Any = None                                                                            # Found any Amps
+
+# Debugging
+
+Debug_Queue = False
+Debug_Amp_UART = False
+Debug_Amp_UART_Parse = False
+Debug_Amp = False
+Debug_Display_UART = False
+Debug_Buttons = False
+Debug_IR = True
 
 # Common Functions
 def tickNow():
@@ -96,21 +128,31 @@ def secondsSinceTick(timestamp):
     #return round(secondsBetweenTick(tickNow(),timestamp)/1000000,4)
     return secondsBetweenTick(tickNow(),timestamp)/1000000
 
+
+def cb(data, addr, ctrl):
+    if data < 0:  # NEC protocol sends repeat codes.
+        print('Repeat code.')
+    else:
+        print('Data {:02x} Addr {:04x} Ctrl {:02x}'.format(data, addr, ctrl))
+
+
 # Structure for MultiAmp
 class MultiAmp:
     "Master class conatining all the amps"
 
     def __init__(self):
+        global IR_Signal
+
         self.Amplifiers = {}                                                                             # Amp Connected
         self.Dict_LED_2_Source = {"Green":"Wifi","Blue":"Bluetooth","Red":"Line In","White":"Optical"}  # LED Source Mapping
-        self.List_Sources_Enabled = ["Wifi","Bluetooth","Line In"]                                      # Sources enabled
+        self.List_Sources_Enabled = ["NET","LINE-IN","BT","USBPLAY","OPT"]                                      # Sources enabled
         self.AmpDisplayed = 0                                                                            # Which Amp is currently primary
 
         self.NextAmpSelectRequested = False                                                             # Button press requesting next amp to be selected
 
-        ### Variable of available Amps - To Be DELETED once Naming is Dynamic
-        #self.AmpsInstalled = ["Oasis","Pool","Italian"]   
-        self.AmpsInstalled = ["Pool"]                                     
+        self.IR = SONY_20(IR_Signal, self.IR_message)  # Instantiate receiver
+        self.IR_Request = []
+        #ir.error_function(print_error)  # Show debug information                               
 
     def ampDiscovery(self,_cycleAttempts,_waitForResponse,_ampuart,):
         "Cycle through the multiplexer a specified number of times waiting for a responce"
@@ -124,56 +166,28 @@ class MultiAmp:
                 _ampuart.setMultiplexState("on")
                 # Clear buffer before looking to see if Amp alive
                 _ampuart.flushUARTreceive()
-                print("PINGING UART: " +str(_ampNumber) + ">",end='')
+                if Debug_Amp_UART: print("PINGING UART: " +str(_ampNumber) + ">",end='')
                 # Can we find a version number for current Amp
                 if _ampuart.transmitRequest("VER;",_waitForResponse):
-                    print("Found amplifier: " + str(_ampNumber))
+                    if Debug_Amp_UART: print("Found amplifier: " + str(_ampNumber))
                     _ampuart.transmitRequest("LED:0;",0.1)
 
-                # ## Only needed because pulling from predefined list NOT LOOKING DOWN THE UART
-                # if len(self.AmpsInstalled) > _ampNumber:
-                #     AmpName = self.AmpsInstalled[_ampNumber]
-                    #print(str(ampNumber) + ":"+ AmpName)
-
                     if self.Amplifiers.get(_ampNumber):
-                        print("Skipping: " + str(_ampNumber))
+                        if Debug_Amp_UART: print("Skipping: " + str(_ampNumber))
                     else:
-                        print("Creating Amp: ", end='')
+                        if Debug_Amp_UART: print("Creating Amp: ", end='')
+
+                        _ampuart.pushToUARTDisplay("MSG:Found Amplifiler #" + str(_ampNumber) + ";")
                         NewAmp = Amp()
                         self.Amplifiers[_ampNumber] = NewAmp 
                         #self.Amplifiers[_ampNumber].Name = AmpName
                         self.Amplifiers[_ampNumber].AvailableSources = self.List_Sources_Enabled
                         self.Amplifiers[_ampNumber].AmpNumber = _ampNumber
                         #print(self.Amplifiers[_ampNumber].Name)
-                        print(_ampNumber)
+                        if Debug_Amp_UART: print(_ampNumber)
                 else:
-                    print("x")
+                    if Debug_Amp_UART: print("x")
 
-                # ## Only needed because pulling from predefined list NOT LOOKING DOWN THE UART
-                # if len(self.AmpsInstalled) > _ampNumber:
-                #     AmpName = self.AmpsInstalled[_ampNumber]
-                #     #print(str(ampNumber) + ":"+ AmpName)
-
-                #     if self.Amplifiers.get(_ampNumber):
-                #         print("Skipping: ", end='')
-                #         print(self.Amplifiers[_ampNumber].Name)
-                #     else:
-                #         print("Creating Amp: ", end='')
-                #         NewAmp = Amp()
-                #         self.Amplifiers[_ampNumber] = NewAmp 
-                #         self.Amplifiers[_ampNumber].Name = AmpName
-                #         self.Amplifiers[_ampNumber].AvailableSources = self.List_Sources_Enabled
-                #         self.Amplifiers[_ampNumber].AmpNumber = _ampNumber
-                #         print(self.Amplifiers[_ampNumber].Name)
-
-
-                ###_ampuart.setMultiplexState("off")
-                # No hardcoded Amp name found - REMOVE once dynamic
-                #else:
-                    #print(ampNumber, end='')
-
-            # Validate if the name matches that in the multiplexer list
-                # If the name is different, update the name
         if (len(self.Amplifiers) == 0):
             return None
         else:
@@ -183,7 +197,7 @@ class MultiAmp:
     def setAmpDisplayed(self,_ampNumber):
         "Change selected amp"
         self.AmpDisplayed = _ampNumber
-        print("Display amp: " + str(_ampNumber))
+        if Debug_Amp: print("Display amp: " + str(_ampNumber))
 
     def getAmpDisplayed(self) -> int:
         "Return current selected amp"
@@ -197,12 +211,12 @@ class MultiAmp:
         _lastAmpNumberposition = 0
         _currentAmpDisplayposition = 0
         for _count, _ampNumber in enumerate(list(self.Amplifiers.keys())):
-            print("Count: " + str(_count) + "  Amp number: " + str(_ampNumber))
+            if Debug_Amp: print("Count: " + str(_count) + "  Amp number: " + str(_ampNumber))
             _lastAmpNumberposition = _count
             if self.getAmpDisplayed() == _ampNumber:
                 _currentAmpDisplayposition = _count
         if _lastAmpNumberposition > _currentAmpDisplayposition:
-            print(list(self.Amplifiers.keys())[_currentAmpDisplayposition+1])
+            if Debug_Amp: print(list(self.Amplifiers.keys())[_currentAmpDisplayposition+1])
 
         # elif self.getAmpDisplayed() < _ampCount:
         #     self.setAmpDisplayed(self.getAmpDisplayed() + 1)
@@ -210,40 +224,32 @@ class MultiAmp:
         #     self.setAmpDisplayed(0)
 
     def listAmps(self):
-        print(len(self.Amplifiers))
+        if Debug_Amp: print(len(self.Amplifiers))
 
-    def refreshAmpStatus(self,ampNumber,_ampuart):
+    def checkUARTforPushedUpdates(self,_ampNumber,_ampuart):
+        # Send blank request - to look for UART in the buffer
+
+        if UART_Com.checkUARTreceive():
+            if Debug_Amp_UART: print("UART_Not Empty:")
+            self.Amplifiers[_ampNumber].requestUART(_ampuart,"")
+
+    def refreshAmpStatus(self,ampNumber,_ampuart, _all = False):
         "Gather status information on specific amplifier"
-        # print(ampNumber)
-        # self.getStatus(ampNumber,_ampuart)
-        # self.getSource(ampNumber,_ampuart) 
-        # self.getVolume(ampNumber,_ampuart) 
-        #print(responseTimestamp)
-        #####self.Amplifiers[ampNumber].requestAmpState(ampNumber,_ampuart)
-        # self.Amplifiers[ampNumber].requestUART(_ampuart,"STA")
-        # _ampStatusString = self.Amplifiers[ampNumber].readAttribute("STA")
-        # # STA: {source,mute,volume,treble,bass,net,internet,playing,led,upgrading};
-        # if _ampStatusString:
-        #     print("STA attrib :" + _ampStatusString)
-        #     self.Amplifiers[ampNumber].saveAttribute("SRC",_ampStatusString.split(",")[0])
-        #     self.Amplifiers[ampNumber].saveAttribute("MUT",_ampStatusString.split(",")[1])
-        #     self.Amplifiers[ampNumber].saveAttribute("VOL",_ampStatusString.split(",")[2])
-        #     self.Amplifiers[ampNumber].saveAttribute("TRE",_ampStatusString.split(",")[3])
-        #     self.Amplifiers[ampNumber].saveAttribute("BAS",_ampStatusString.split(",")[4])
-        #     self.Amplifiers[ampNumber].saveAttribute("NET",_ampStatusString.split(",")[5])
-        # Don't trust the general status to show correct play status
-        #### self.Amplifiers[ampNumber].requestPlaybackStatus(_ampuart)
+        if _all:
+            if Debug_Amp_UART: print(":::Full scan:::>" + str(ampNumber))
+        else:
+            if Debug_Amp_UART: print(":::Slow scan:::> " + str(ampNumber))
 
         # Send blank request - to look for UART in the buffer
-        self.Amplifiers[ampNumber].requestUART(_ampuart,"")
+        ##self.Amplifiers[ampNumber].requestUART(_ampuart,"")
 
 
         # Unknown Name
-        if self.Amplifiers[ampNumber].readAttribute("NAM") == None:
+        if self.Amplifiers[ampNumber].readAttribute("NAM") == None or _all:
             self.Amplifiers[ampNumber].requestUART(_ampuart,"NAM")
 
         # Missing song info
-        if self.Amplifiers[ampNumber].readAttribute("TIT") == None:
+        if self.Amplifiers[ampNumber].readAttribute("TIT") == None or (self.Amplifiers[ampNumber].readAttribute("PLA") == "1" and self.Amplifiers[ampNumber].readAttribute("TIT") == "") or _all:
              self.Amplifiers[ampNumber].requestUART(_ampuart,"TIT")
              self.Amplifiers[ampNumber].requestUART(_ampuart,"ART")
              self.Amplifiers[ampNumber].requestUART(_ampuart,"ALB")
@@ -251,23 +257,23 @@ class MultiAmp:
 
 
         # Unknown Volume
-        if self.Amplifiers[ampNumber].readAttribute("VOL") == None:
+        if self.Amplifiers[ampNumber].readAttribute("VOL") == None or _all:
             self.Amplifiers[ampNumber].requestUART(_ampuart,"VOL")
 
         # Unknown Play state
-        if self.Amplifiers[ampNumber].readAttribute("PLA") == None:
+        if self.Amplifiers[ampNumber].readAttribute("PLA") == None or _all:
             self.Amplifiers[ampNumber].requestUART(_ampuart,"PLA")
 
         # Unknown Source
-        if self.Amplifiers[ampNumber].readAttribute("SRC") == None:
+        if self.Amplifiers[ampNumber].readAttribute("SRC") == None or _all:
             self.Amplifiers[ampNumber].requestUART(_ampuart,"SRC")
 
         # Position update if playing
-        if self.Amplifiers[ampNumber].readAttribute("PLA") == "1":
+        if self.Amplifiers[ampNumber].readAttribute("PLA") == "1" or _all:
             self.Amplifiers[ampNumber].requestUART(_ampuart,"ELP")
 
         # Unknown Feed
-        if self.Amplifiers[ampNumber].readAttribute("VND") == None:
+        if self.Amplifiers[ampNumber].readAttribute("VND") == None or _all:
             self.Amplifiers[ampNumber].requestUART(_ampuart,"VND")
 
         # If we have a position but no track info eval("(" + str(_position) + ")")
@@ -279,94 +285,94 @@ class MultiAmp:
 
 
         _one_at_a_time = True
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Wifi
-            if self.Amplifiers[ampNumber].readAttribute("WIF") == None:
+            if self.Amplifiers[ampNumber].readAttribute("WIF") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"WIF")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Wifi
-            if self.Amplifiers[ampNumber].readAttribute("ETH") == None:
+            if self.Amplifiers[ampNumber].readAttribute("ETH") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"ETH")
                 _one_at_a_time = False
-        if _one_at_a_time:        
+        if _one_at_a_time or _all:        
             # Unknown Loopmode
-            if self.Amplifiers[ampNumber].readAttribute("LPM") == None:
+            if self.Amplifiers[ampNumber].readAttribute("LPM") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"LPM")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Audio Channel
-            if self.Amplifiers[ampNumber].readAttribute("CHN") == None:
+            if self.Amplifiers[ampNumber].readAttribute("CHN") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"CHN")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Bluetooth
-            if self.Amplifiers[ampNumber].readAttribute("BTC") == None:
+            if self.Amplifiers[ampNumber].readAttribute("BTC") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"BTC")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Mute
-            if self.Amplifiers[ampNumber].readAttribute("MUT") == None:
+            if self.Amplifiers[ampNumber].readAttribute("MUT") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"MUT")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown LED
-            if self.Amplifiers[ampNumber].readAttribute("LED") == None:
+            if self.Amplifiers[ampNumber].readAttribute("LED") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"LED")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Treble
-            if self.Amplifiers[ampNumber].readAttribute("TRE") == None:
+            if self.Amplifiers[ampNumber].readAttribute("TRE") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"TRE")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Bass
-            if self.Amplifiers[ampNumber].readAttribute("BAS") == None:
+            if self.Amplifiers[ampNumber].readAttribute("BAS") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"BAS")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Vertual Bass
-            if self.Amplifiers[ampNumber].readAttribute("VBS") == None:
+            if self.Amplifiers[ampNumber].readAttribute("VBS") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"VBS")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Multiroom Audio
-            if self.Amplifiers[ampNumber].readAttribute("MRM") == None:
+            if self.Amplifiers[ampNumber].readAttribute("MRM") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"MRM")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Audioable
-            if self.Amplifiers[ampNumber].readAttribute("AUD") == None:
+            if self.Amplifiers[ampNumber].readAttribute("AUD") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"AUD")
                 _one_at_a_time = False
-        if _one_at_a_time:
-            # Unknown Version
-            if self.Amplifiers[ampNumber].readAttribute("POM") == None:
-                self.Amplifiers[ampNumber].requestUART(_ampuart,"POM")
-                _one_at_a_time = False
-        if _one_at_a_time:          
+        # if _one_at_a_time or _all:
+        #     # Unknown Version
+        #     if self.Amplifiers[ampNumber].readAttribute("POM") == None or _all:
+        #         self.Amplifiers[ampNumber].requestUART(_ampuart,"POM")
+        #         _one_at_a_time = False
+        if _one_at_a_time or _all:          
             # Unknown Beep Sound
-            if self.Amplifiers[ampNumber].readAttribute("BEP") == None:
+            if self.Amplifiers[ampNumber].readAttribute("BEP") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"BEP")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Pregain
-            if self.Amplifiers[ampNumber].readAttribute("PRG") == None:
+            if self.Amplifiers[ampNumber].readAttribute("PRG") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"PRG")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Max Volume
-            if self.Amplifiers[ampNumber].readAttribute("MXV") == None:
+            if self.Amplifiers[ampNumber].readAttribute("MXV") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"MXV")
                 _one_at_a_time = False
-        if _one_at_a_time:
+        if _one_at_a_time or _all:
             # Unknown Version
-            if self.Amplifiers[ampNumber].readAttribute("VER") == None:
+            if self.Amplifiers[ampNumber].readAttribute("VER") == None or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"VER")
                 _one_at_a_time = False
-        if _one_at_a_time:
-            # Unknown Wifi
-            if self.Amplifiers[ampNumber].readAttribute("NAM") == "":
+        if _one_at_a_time or _all:
+            # Unknown Name
+            if self.Amplifiers[ampNumber].readAttribute("NAM") == "" or _all:
                 self.Amplifiers[ampNumber].requestUART(_ampuart,"NAM")
                 _one_at_a_time = False
         # if _one_at_a_time:
@@ -384,6 +390,106 @@ class MultiAmp:
 
         for ampNumber in list(self.Amplifiers.keys()):
             self.refreshAmpStatus(ampNumber,_ampuart)
+
+    # Interupt if any button depressed (VNR,Eject,Stop,Play/Pause/Forward/Rewind)
+    def Button_Handler(self, pin):
+
+        global Flag_Button_Pressed, Pin_Pressed
+        #if Debug_Buttons: print(pin)
+
+        Flag_Button_Pressed = True
+        Pin_Pressed = pin
+
+    def action_button(self,_ampuart):
+        if Pin_Pressed == Pin(Pin_BUT_Amp_Cycle):
+            if Debug_Buttons: print("Button:> Next Amp")
+            self.setNextAmpDisplayed()
+            if Debug_Buttons: print(" [DONE]")
+        if Pin_Pressed == Pin(Pin_BUT_Source_Cycle):
+            if Debug_Buttons: print("Button:> Next Source",end='')
+            self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"SRC" , self.Amplifiers[self.getAmpDisplayed()].returnNextSource())
+            if Debug_Buttons: print(" [DONE]")
+        if Pin_Pressed == Pin(Pin_BUT_Previous):
+            if Debug_Buttons: print("Button:> Previous track",end='')
+            self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"PRE","")
+            if Debug_Buttons: print(" [DONE]")
+        if Pin_Pressed == Pin(Pin_BUT_Next):
+            if Debug_Buttons: print("Button:> Next track",end='')
+            self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"NXT","")
+            if Debug_Buttons: print(" [DONE]")
+        if Pin_Pressed == Pin(Pin_BUT_Play):
+            if Debug_Buttons: print("Button:> Play track",end='')
+            if self.Amplifiers[self.getAmpDisplayed()].readAttribute("PLA") == "0":
+                self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"POP","")
+                if Debug_Buttons: print(" [DONE]")
+            else:
+                if Debug_Buttons: print(" [Already playing]")    
+        if Pin_Pressed == Pin(Pin_BUT_Pause):
+            if Debug_Buttons: print("Button:> Pause track",end='')
+            if self.Amplifiers[self.getAmpDisplayed()].readAttribute("PLA") == "1":
+                self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"POP","")
+                if Debug_Buttons: print(" [DONE]")
+            else:
+                if Debug_Buttons: print(" [Already paused]")                
+        if Pin_Pressed == Pin(Pin_BUT_Stop):
+            if Debug_Buttons: print("Button:> Stop track",end='')
+            self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"STP","")
+            if Debug_Buttons: print(" [DONE]")
+
+    def IR_message(self, _data, _addr, _ctrl):
+        #print('Data {:02x} Addr {:04x} Ctrl {:02x}'.format(_data, _addr, _ctrl))
+        self.IR_Request = [_data,_addr,_ctrl]
+
+    def process_IR(self,_ampuart):
+        "look for any IR messages and process"
+
+        if self.IR_Request != [0,0,0]:
+
+            # Grab current value
+            _current_IR_processing = self.IR_Request
+            # Clear ready for next
+            self.IR_Request = [0,0,0]
+
+            if _current_IR_processing == [26,2,0]:
+                if Debug_IR: print("IR:> Play track",end='')
+                if self.Amplifiers[self.getAmpDisplayed()].readAttribute("PLA") == "0":
+                    self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"POP","")
+                    if Debug_IR: print(" [DONE]")
+                else:
+                    if Debug_IR: print(" [Already playing]")  
+            elif  _current_IR_processing == [24,2,0]:
+                if Debug_IR: print("IR:> Stop track",end='')
+                self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"STP","")
+                if Debug_IR: print(" [DONE]")
+            elif  _current_IR_processing == [25,2,0]:
+                if Debug_IR: print("IR:> Pause track",end='')
+                if self.Amplifiers[self.getAmpDisplayed()].readAttribute("PLA") == "1":
+                    self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"POP","")
+                    if Debug_IR: print(" [DONE]")
+                else:
+                    if Debug_IR: print(" [Already paused]") 
+            elif  _current_IR_processing == [86,2,0]:
+                if Debug_IR: print("IR:> Next track",end='')
+                self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"NXT","")
+                if Debug_IR: print(" [DONE]")
+            elif  _current_IR_processing == [87,2,0]:
+                if Debug_IR: print("IR:> Previous track",end='')
+                self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"PRE","")
+                if Debug_IR: print(" [DONE]")
+            elif  _current_IR_processing == [20,48,0]:
+                if self.Amplifiers[self.getAmpDisplayed()].readAttribute("MUT") == "1":
+                    if Debug_IR: print("IR:> Unmute",end='')
+                else:
+                    if Debug_IR: print("IR:> Mute",end='')
+                self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"MUT","")
+                if Debug_IR: print(" [DONE]")
+            elif  _current_IR_processing == [123,121,0]:
+                if Debug_IR: print("IR:> Next source",end='')
+                self.Amplifiers[self.getAmpDisplayed()].pushUART(_ampuart,"SRC" , self.Amplifiers[self.getAmpDisplayed()].returnNextSource())
+                if Debug_IR: print(" [DONE]")
+            else:
+                if Debug_IR: print("IR:> " + str(_current_IR_processing))
+
 
 # Amp status object
 class Amp:
@@ -422,10 +528,16 @@ class Amp:
 
     def pushUART(self,_ampuart,_key,_value):
         "Push value based on it's key"
-        return _ampuart.requestCommand(self.AmpNumber, _key + ":" + str(_value) + ";","High",0.1)
+        if _value == "":
+            _push = _key
+        else:
+            _push = _key + ":" + str(_value) + ";"
+
+        return _ampuart.requestCommand(self.AmpNumber, _push ,"High",0.1)
         
     def requestUART(self,_ampuart,_key,wait=0.1):
         "Request value base on Key"
+        if Debug_Queue: print("Push-Q:> " + str(_key))
         return _ampuart.requestCommand(self.AmpNumber, _key + ";","Low",wait)
         
     def saveAttribute(self,_key,_value):
@@ -492,52 +604,12 @@ class Amp:
         # print("Upgrading:" + str(self.Upgrading), end='  |  ')
         print("----------------------------------------------")
 
-# Button status
-# class Button:
-#     "Status of the buttons"
-
-#     def __init__(self) -> None:
-#         self.PlayPause = False
-#         self.Stop = False
-#         self.Forward = False
-#         self.Reverse = False
-#         self.Eject = False
-#         self.Source = False
-
-#     def pressedPlayPause(self):
-#         "Interupt received for Play Pause"
-#         print("PlayPause")
-
-#     def pressedStop(self):
-#         "Interupt received for Play Pause"
-#         print("PlayPause")
-
-#     def pressedForward(self):
-#         "Interupt received for Play Pause"
-#         print("PlayPause")
-        
-#     def pressedReverse(self):
-#         "Interupt received for Play Pause"
-#         print("PlayPause")
-        
-#     def pressedEject(self):
-#         "Interupt received for Play Pause"
-#         print("PlayPause")
-        
-#     def pressedSource(self):
-#         "Interupt received for Play Pause"
-#         print("PlayPause")
-
-# LED control
-# class LED:
-#     "Control of LEDs, currently only Source"
-
-#     def __init__(self) -> None:
-#         self.CurrentColour = "Off"
-#         self.NextColour = ""
-
-#     def matchSourcetoColour(self):
-#         "If needed match the LED colour to the source colour"
+    def returnNextSource(self):
+        _position = self.AvailableSources.index(self.readAttribute("SRC"))
+        if _position < len(self.AvailableSources) - 1:
+            return self.AvailableSources[_position + 1]
+        else:
+            return self.AvailableSources[0]
 
 
 # Control a Multiplexer
@@ -617,9 +689,6 @@ class LineOut_Multiplexer(Multiplexer):
         super().__init__(1,1,1,Limit_LineOut_Multiplexer_Max_Channels,1)                     # Inherit everything from Multiplexer
 
 # Control of the UART communication
-
-#class UART_Communication(UART_Multiplexer,UART):
-
 class UART_Communication(UART_Multiplexer):
 
     def __init__(self) -> None:
@@ -652,7 +721,7 @@ class UART_Communication(UART_Multiplexer):
         # If queue not empty, check if multiplexer idle
         if self.getRequestQueueLength() > 0 and self.Idle == True:
             #print(UART_Com.getRequestQueueLength(), end='')
-            #print(list(self.getQueueRequests()))
+            #print(list(self.getQueueRequestsIDs()))
             #self.printQueue()
             # Lock mutliplexer idle
             self.Idle = False
@@ -660,7 +729,7 @@ class UART_Communication(UART_Multiplexer):
             request = tickNow()
             found = False
             # Find the oldest high priority request
-            for lowest in (self.getQueueRequests()):
+            for lowest in (self.getQueueRequestsIDs()):
                 if self.getRequestComplete(lowest) == False and self.getRequestPriority(lowest) == "High":
                     #print("*", end='')
                     if lowest < request:
@@ -669,20 +738,26 @@ class UART_Communication(UART_Multiplexer):
 
             # If no high priority requests, find the oldest low priorty request
             if found == False:
-                for lowest in (self.getQueueRequests()):
+                for lowest in (self.getQueueRequestsIDs()):
                         if self.getRequestComplete(lowest) == False and self.getRequestPriority(lowest) == "Low":
                             if lowest < request:
                                 request = lowest
                                 found = True
+                                if Debug_Queue: print("Found-Q:>" + str(request) + " (" + str(self.getRequestMessage(request)) + ")")
 
-            if found == True and request in self.getQueueRequests():
+            if found == True and request in self.getQueueRequestsIDs():
                 ### Process Request ###
                 # Select Multiplexer
                 self.setMultiplexState("off")
                 self.setLiveChannel(self.getRequestAmp(request))
                 self.setMultiplexState("on")
+
+                if Debug_Queue: print("Length-Q:> " + str(self.getRequestQueueLength()))
+                # Send message
+                if Debug_Queue: print("PopOff-Q:> " + str(request) + " (" + self.getRequestMessage(request) + ")")
                 # Send message
                 self.ResponseBuffer[request]=self.transmitRequest(self.getRequestMessage(request),self.getResponseWait(request))
+                if Debug_Queue: print("ReplyOnto-B:> " + str(self.ResponseBuffer[request]))
                 # Push response into buffer
                 self.setRequestComplete(request,True)
                 # if self.getRequestPriority(request) == "High":
@@ -712,7 +787,7 @@ class UART_Communication(UART_Multiplexer):
                     # Find the oldest high priority request
                     for lowest in (self.QueuedRequests.keys()):
                         if self.getRequestComplete(lowest) == False and self.getRequestPriority(lowest) == "High":
-                            print("*", end='')
+                            if Debug_Queue: print("*", end='')
                             if lowest < request:
                                 request = lowest
                                 found = True
@@ -733,24 +808,34 @@ class UART_Communication(UART_Multiplexer):
                         self.ResponseBuffer[request]=self.transmitRequest(self.getRequestMessage(request),1)
                         # Push response into buffer
                         self.setRequestComplete(request,True)
-                        print(".")
+                        if Debug_Queue: print(".")
                     # Unlock multiplexer idle
                     self.Idle = True
             except Exception:
                 print("EXECPTION")
     
-    def transmitRequest(self,message,wait):
+    def transmitRequest(self,_message,wait):
         "Actually send the message down the UART"
         # Anything in the buffer 
         # print("{" + str(self.ampuart.read()),end='}')
-        self.ampuart.write(message)
+        if Debug_Amp_UART: print("UART_Send-A:" + str(_message))
+        self.ampuart.write(_message)
         sleep(wait)
         # read line into buffer
         _response = self.ampuart.read()
-        #print("Receive-A:" + str(_response))
+        if Debug_Amp_UART: print("UART_Receive-A:" + str(_response))
         return str(_response)[2:][:-6]
 
+    def checkUARTreceive(self):
+        "Check if there's something in the UART Rx"
+        if Debug_Amp_UART: print("UART Rx:>" + str(self.ampuart.any()))
+        if self.ampuart.any() > 0:
+            return True
+        else:
+            return False
+
     def flushUARTreceive(self):
+        "Clear the buffer and ignore anything found"
         self.ampuart.read()
 
     def removeFromQueue(self,request):
@@ -823,16 +908,20 @@ class UART_Communication(UART_Multiplexer):
         "Requests an API message to the UART to a particular Amp"
         global Flag_System_RedLine
 
+        # Is the request already on the queue, if so don't add?
+        if message in self.getQueueRequests():
+            return False
+
         # How many times has back presure been applied, if too high lower soft limit
         if self.BackPresureCount == self.BackPresureThreshold:
             if self.ThrottleingQueueLength > 0:
                 self.ThrottleingQueueLength = self.ThrottleingQueueLength - 1
                 self.BackPresureCount = 0
                 self.LastBackPresureThreshold = tickNow()
-                print("<",end='')
+                if Debug_Queue: print("<",end='')
             else:
-                print("Danger",end='')
-                print("<",end='')
+                if Debug_Queue: print("Danger",end='')
+                if Debug_Queue: print("<",end='')
                 self.MaxQueueLength = self.MaxQueueLength + 1
                 self.BackPresureCount = 0
                 self.LastBackPresureThreshold = tickNow()
@@ -844,14 +933,14 @@ class UART_Communication(UART_Multiplexer):
             if self.MaxQueueLength > Limit_UART_Max_Queue_Length:
                 self.MaxQueueLength = self.MaxQueueLength - 1
                 self.LastBackPresureThreshold = tickNow()
-                print(">",end='')
+                if Debug_Queue: print(">",end='')
                 if self.MaxQueueLength == Limit_UART_Max_Queue_Length:
                     Flag_System_RedLine = False
-                    print("Cooling",end='')
+                    if Debug_Queue: print("Cooling",end='')
             elif self.ThrottleingQueueLength < self.MaxQueueLength:
                     self.ThrottleingQueueLength = self.ThrottleingQueueLength + 1
                     self.LastBackPresureThreshold = tickNow()
-                    print(">",end='')
+                    if Debug_Queue: print(">",end='')
             else:
                 # Things have returned to normal
                 #print("N",end='')
@@ -898,7 +987,7 @@ class UART_Communication(UART_Multiplexer):
                     pass
                 return False
         else:
-            print("Bad amp number")
+            if Debug_Queue: print("Bad amp number")
             return False
 
     def pruneQueue(self):
@@ -907,24 +996,31 @@ class UART_Communication(UART_Multiplexer):
         for request in list(self.QueuedRequests.keys()):
             # Message older than max time and likely stale
             if int(secondsSinceTick(request)) > self.MaxQueueWaitSeconds:
-                print("-", end='')
+                if Debug_Queue: print("-", end='')
                 self.removeFromQueue(request)
             # Queue busy and message older than reasonable
             if (int(secondsSinceTick(request))) > self.MaxBusyQueueWaitSeconds and self.getRequestQueueLength() > self.MaxQueueLength:
-                print("+", end='')
+                if Debug_Queue: print("+", end='')
                 self.removeFromQueue(request)
 
     def printQueue(self):
         "Return current queue"
+        print ("Queue-" + str(len(self.QueuedRequests)) + ":>", end="")
         for request in self.QueuedRequests:
-            print(str(request) + ":|" + self.QueuedRequests[request][1] + "," + str(self.QueuedRequests[request][2]) + "," + self.QueuedRequests[request][3] + "|  ", end='')
+            print(str(request) + ":|" + self.QueuedRequests[request][1] + "," + str(self.QueuedRequests[request][2]) + "," + self.QueuedRequests[request][3] + "|  ",end='')
         print()
 
     def getQueue(self):
         return list(self.QueuedRequests.items())
     
-    def getQueueRequests(self):
+    def getQueueRequestsIDs(self):
         return list(self.QueuedRequests.keys())
+
+    def getQueueRequests(self):
+        _list_of_RequestTypes = []
+        for ID in list(self.QueuedRequests.keys()):
+            _list_of_RequestTypes.append(self.getRequestMessage(ID))
+        return _list_of_RequestTypes
 
     def parseResponses(self):
         "Worker processing responses"
@@ -941,7 +1037,9 @@ class UART_Communication(UART_Multiplexer):
 
         # Look through the queue for processed low priority responses
         for request in list(self.QueuedRequests.keys()):
+            #if Debug_Amp_UART_Parse: print("Parse-B:> " + str(request))
             if self.QueuedRequests[request][2] == True and self.QueuedRequests[request][3] == "Low":
+                if Debug_Amp_UART_Parse: print("Parsing-B:> " + str(request))
                 
                 # Interpret the request to determine the action needed
                 self.actionParsedResponse(request)
@@ -955,7 +1053,7 @@ class UART_Communication(UART_Multiplexer):
 
         # Count if more that one Response type in the buffer, look for the ':'
         ##bufferRequests = ure.sub("r|n\g","",self.ResponseBuffer[request])
-
+        if Debug_Amp_UART_Parse: print("Processing-B:> " + str(self.ResponseBuffer[request]))
         self.ResponseBuffer[request]
         _firstFound = -1
         # Check if starts with control chars, and remove
@@ -991,29 +1089,62 @@ class UART_Communication(UART_Multiplexer):
             response = bufferRequests[i][4:]
             ##self.ResponseBuffer[request] = self.ResponseBuffer[request][4:]
 
+            if Debug_Amp_UART_Parse: print("ParseResponse-B:> (" + str(requestType) + ":" + str(response) + ")")
             #screen out if the amp sends junk
-            if bool(match('^[A-Z][A-Z][A-Z]',requestType)):
+            if requestType in ["ELP","TIT","ART","ALB","VND","VER","STA","SYS","SRC","VOL","MUT","BAS","TRE","CHN","MRM","PST","LPM","NAM","DLY","MXV","POM","WWW","AUD","BTC","BEP","PLA","LED","VBS","ETH","WIF","PMT","PRG","ASW"]:
+            #if bool(match('^[A-Z][A-Z][A-Z]',requestType)):
+                # if len(response) > 100:
+                #     if Debug_Amp_UART_Parse: print("Suspect Junk:> " + response)
+                #     return
+
+                # Start with empty info
+                _displaypush = ":;"
                 
                 if requestType == "NAM":
-                    _display_ampname = unhexlify(response).decode("ASCII")
-                    print("Received-A:> " + requestType + ":" + _display_ampname + "; ",end='')
-                    _displaypush = requestType + ":" + _display_ampname + ";"
+                    try:
+                        _display_ampname = unhexlify(response).decode("ASCII")
+                        if len(_display_ampname) > 0:
+                            # Amp exists, and we know it's name
+                            self.pushToUARTDisplay("AMP:1;")   
+                            if Debug_Amp_UART_Parse: print("Received-A:> " + requestType + ":" + _display_ampname + "; ",end='')
+                            _displaypush = requestType + ":" + _display_ampname + ";"
+                    except:
+                        if Debug_Amp_UART_Parse: print("Received-A:> " + requestType + ":" + str(response) + "; ",end='')
+                        if Debug_Amp_UART_Parse: print("BAD Amp name:> " + str(response))
+
+                elif requestType in ["WWW","AUD","BTC","BEP","PLA","LED","VBS","ETH","WIF","PMT","PRG","ASW"]:
+                    if response != "0" and response != "1":
+                        if Debug_Amp_UART_Parse: print("Junk-A :>",end='')
+                        if Debug_Amp_UART_Parse: print(requestType + ":" + str(response) + "; ")
+                        return 
+                    
                 else:
-                    print("Received-A:> " + requestType + ":" + response + "; ",end='')
+                    if Debug_Amp_UART_Parse: print("Received-A:> " + requestType + ":" + response + "; ",end='')
                     _displaypush = requestType + ":" + response + ";"
 
 
                 if str(MA.Amplifiers[ampNumber].readAttribute(requestType)) != response:
-                    self.pushToUARTDisplay(_displaypush)
-                    #print("DISPLAY>" + _displaypush)
-                    MA.Amplifiers[ampNumber].saveAttribute(requestType,response)
+                    if _displaypush != ":;":
+                        if Debug_Display_UART: print("Forward-D:> " + str(_displaypush))
+                        self.pushToUARTDisplay(_displaypush)
+                        #print("DISPLAY>" + _displaypush)
                 else:
-                    print()
-                    #print("Already have:> " + str(requestType) + ":" + str(MA.Amplifiers[ampNumber].readAttribute(requestType)))
+                    if Debug_Amp_UART_Parse: print()
+                    if Debug_Display_UART: print("Receive_Same:> " + str(requestType) + ":" + str(MA.Amplifiers[ampNumber].readAttribute(requestType)) + " = " + response)
+
+                # Save attribute
+                if Debug_Amp_UART_Parse: print("SaveAttrib:> " + str(requestType) + ":" + str(response))
+                MA.Amplifiers[ampNumber].saveAttribute(requestType,response)
+
+            elif requestType == "":
+                if Debug_Amp_UART_Parse: print("Empty-RequestType-A:")
+                return
+            else:
+                if Debug_Amp_UART_Parse: print("Junk-RequestType-A:> " + str(requestType))
 
     def pushToUARTDisplay(self,message):
         "Push attribute to display"
-        print("Write-D:> " + str(message))
+        if Debug_Display_UART: print("Write-D:> " + str(message))
         LED_Internal.high()
         self.displayuart.write(message)
         LED_Internal.low()
@@ -1028,6 +1159,9 @@ class UART_Communication(UART_Multiplexer):
             return str(_request)[2:][:-2]
 
     def answerUARTDisplayRequest(self):
+
+        global Found_Any
+
         _request = self.pullFromUARTDisplay()
         #print("Receive-D<" + str(_request))
         if not None and len(str(_request)) == 3:
@@ -1040,48 +1174,50 @@ class UART_Communication(UART_Multiplexer):
 
             LED_Internal.low()
         
+            _forward_UART = True
             # When the amp first starts up, it doesn't have a title, and returns None, this is passed as a string.
             if _request == "TIT" and _response is None:
                 _displaypush = str(_request) + ":;"
+                _forward_UART = False
             else:
                 _displaypush = str(_request) + ":" + str(_response) + ";"
 
             # When the amp first starts up, it doesn't have a title, and returns None, this is passed as a string.
             if _request == "NAM" and _response is None:
                 _displaypush = str(_request) + ":;"
+                _forward_UART = False
             else:
                 _displaypush = str(_request) + ":" + str(_response) + ";"
 
-            print("Read-D:> " + _displaypush)
-            self.pushToUARTDisplay(_displaypush)
+            if Debug_Display_UART: print("Read-D:> " + _displaypush)
+            # Display asking if we've found an Amplifier yet
+            if _request == "AMP":
+                if Found_Any:
+                    self.pushToUARTDisplay("AMP:1;")
+                    self.pushToUARTDisplay("MSG:Waiting for Amp #" + str(MA.getAmpDisplayed()) + " to start...;")
+
+            elif _request == "WHT":
+                # Need to push PLA, TIT, ALB, ART because the display thinks it's missing out
+                if Debug_Display_UART: print("WHT amp-D:> " + str(MA.getAmpDisplayed()))
+                for _whatrequests in ["PLA","TIT","ALB","ART","VND"]:
+                    if MA.Amplifiers[MA.getAmpDisplayed()].readAttribute(_whatrequests) is None:
+                        self.pushToUARTDisplay(_whatrequests+":;")
+                    else:
+                        self.pushToUARTDisplay(_whatrequests + ":" + str(MA.Amplifiers[MA.getAmpDisplayed()].readAttribute(_whatrequests)) + ";")
+
+                # self.pushToUARTDisplay("PLA:" + str(MA.Amplifiers[MA.getAmpDisplayed()].readAttribute("PLA")) + ";")
+                # self.pushToUARTDisplay("TIT:" + str(MA.Amplifiers[MA.getAmpDisplayed()].readAttribute("TIT")) + ";")
+                # self.pushToUARTDisplay("ALB:" + str(MA.Amplifiers[MA.getAmpDisplayed()].readAttribute("ALB")) + ";")
+                # self.pushToUARTDisplay("ART:" + str(MA.Amplifiers[MA.getAmpDisplayed()].readAttribute("ART")) + ";")
+                # self.pushToUARTDisplay("VND:" + str(MA.Amplifiers[MA.getAmpDisplayed()].readAttribute("VND")) + ";")
+                
+            # if the message is something we want to send
+            elif _forward_UART:
+                self.pushToUARTDisplay(_displaypush)
         #else:
             #print("x",end='')
             #print(str(_request)[:2][:-1])
 
-### Function to detect button press
-# Interupt if any button depressed (VNR,Eject,Stop,Play/Pause/Forward/Rewind)
-def Button_Handler(pin):
-    print(pin)
-    MA.NextAmpSelectRequested = True
-    # if pin == Pin_Source_Cycle:
-    #     print("Source")
-    # elif pin == Pin_Amp_Cycle:
-    #     print("Amp")
-    # else:
-    #     print("?")
-
-
-### Configure button interupts
-
-# print("Configuring button interupts...", end= '')
-# Button_Source_Cycle.irq(trigger=Pin.IRQ_RISING, handler=Button_Handler)
-# print("source", end = '')
-Button_Amp_Cycle.irq(trigger=Pin.IRQ_RISING, handler=Button_Handler)
-# print(",amp", end = '')
-# print(" done")
-# print()
-
-### Function to detect IR request
 
 
 ### Function to read if there's input from the output of each amp
@@ -1091,19 +1227,44 @@ Button_Amp_Cycle.irq(trigger=Pin.IRQ_RISING, handler=Button_Handler)
 
 ###### Begin Main ######
 
-print("STARTING")
+
+print("Starting Multiroom Amplifier Pico - Amplifier Pico")
+print("*********************************")
+print()
+
+
 
 # Initiate Primary Object
+print("Configuring MultiAmp...", end= '')
 MA = MultiAmp()
+print("[DONE]")
 
 # Initiate UART
+print("Configuring UART Comunications...", end= '')
 UART_Com = UART_Communication()
+print("[DONE]")
+
+### Configure button interupts
+print("Configuring button interupts...", end= '')
+
+Button_Amp_Cycle.irq(trigger=Pin.IRQ_FALLING, handler=MA.Button_Handler)
+Button_Source_Cycle.irq(trigger=Pin.IRQ_FALLING, handler=MA.Button_Handler)
+Button_Previous.irq(trigger=Pin.IRQ_FALLING, handler=MA.Button_Handler)
+Button_Next.irq(trigger=Pin.IRQ_FALLING, handler=MA.Button_Handler)
+Button_Play.irq(trigger=Pin.IRQ_FALLING, handler=MA.Button_Handler)
+Button_Pause.irq(trigger=Pin.IRQ_FALLING, handler=MA.Button_Handler)
+Button_Stop.irq(trigger=Pin.IRQ_FALLING, handler=MA.Button_Handler)
+print("[DONE]")
+
+### Telling Display no Amp found
+print("Looking for amplifiers...", end= '')
+UART_Com.pushToUARTDisplay("AMP:0;")
 
 # Loop until at least 1 amp is found
-Found_Any = None
-
 while Found_Any == None:
+    UART_Com.pushToUARTDisplay("MSG:Searching for amplifiers...;")
     Found_Any = MA.ampDiscovery(1,1,UART_Com)
+print("[DONE]")
 
 
 ###### Spawning Second Thread (or not) ######
@@ -1113,7 +1274,10 @@ if Flag_UART_Threading_Enabled == True:
     start_new_thread(UART_Com.THREADsendNextCommandFromQueue, ())
     baton = allocate_lock()
 
+
+print("Gathering details for all amplifiers...", end= '')
 MA.refreshAllAmpStatus(UART_Com)
+print("[DONE]")
 
 
 lastPrune = tickNow()
@@ -1123,12 +1287,21 @@ lastProcessed = tickNow()
 lastQueuePrint = tickNow()
 lastAutoGenerateLow = tickNow()
 lastCheckAllStatus = tickNow()
+lastCheckUARTReceivedUpdates = tickNow()
 lastAmpScan = tickNow()
 lastButtonFlagChecks = tickNow()
+lastIRChecks = tickNow()
 
 lastAmpPrint = tickNow()
 
 lastDisplayUARTCheck = tickNow()
+lastGarbageCollection = tickNow()
+
+
+print()
+print("Configuration complete, staring main program...[GO]")
+print()
+
 
 
 while True:
@@ -1142,17 +1315,22 @@ while True:
         lastParse = tickNow()
         UART_Com.parseResponses()
 
-    if secondsSinceTick(lastPrune) > 10:  
+    if secondsSinceTick(lastPrune) > 4:  
         lastPrune = tickNow()
         UART_Com.pruneQueue()
 
     if secondsSinceTick(lastQueuePrint) < 0:
         lastQueuePrint = tickNow()
-        #UART_Com.printQueue()
+        UART_Com.printQueue()
 
-    if secondsSinceTick(lastCheckAllStatus) > 1:
+    if secondsSinceTick(lastCheckAllStatus) > 3:
         lastCheckAllStatus = tickNow()  
-        MA.refreshAllAmpStatus(UART_Com) 
+        MA.refreshAllAmpStatus(UART_Com)
+
+    if secondsSinceTick(lastCheckUARTReceivedUpdates) > 0.5:
+        lastCheckUARTReceivedUpdates = tickNow()
+        MA.checkUARTforPushedUpdates(MA.getAmpDisplayed(),UART_Com)
+    
 
     if secondsSinceTick(lastProcessed) > 0.01 and Flag_UART_Threading_Enabled == False:
         lastProcessed = tickNow()
@@ -1161,7 +1339,7 @@ while True:
 #Print details about all amps
     if secondsSinceTick(lastAmpPrint) > 10:
         lastAmpPrint = tickNow()
-        print(str(len(MA.Amplifiers)) + " amplifier monitored and " + str(MA.getAmpDisplayed()) + " currently selected")
+        if Debug_Amp: print(str(len(MA.Amplifiers)) + " amplifier monitored and " + str(MA.getAmpDisplayed()) + " currently selected")
         for ampNumber in list(MA.Amplifiers.keys()):
             MA.Amplifiers[ampNumber].printAmp()
 
@@ -1170,13 +1348,24 @@ while True:
         lastDisplayUARTCheck = tickNow()
         UART_Com.answerUARTDisplayRequest()
 
-    if secondsSinceTick(lastAmpScan) > 30:
+    if secondsSinceTick(lastAmpScan) < 0:
         lastAmpScan = tickNow()
         MA.ampDiscovery(1,1,UART_Com)
+        MA.refreshAmpStatus(MA.getAmpDisplayed(),UART_Com,True)
 
     if secondsSinceTick(lastButtonFlagChecks) > 1:
         lastButtonFlagChecks = tickNow()
-        if MA.NextAmpSelectRequested == True:
-            MA.setNextAmpDisplayed()
-            MA.NextAmpSelectRequested = False
-            print("IPNG") 
+        if Flag_Button_Pressed == True:
+            MA.action_button(UART_Com)
+        Flag_Button_Pressed = False
+
+    if secondsSinceTick(lastIRChecks) > 1:
+        lastIRChecks = tickNow()    
+        # look for any IR messages and process
+        MA.process_IR(UART_Com)
+
+    if secondsSinceTick(lastGarbageCollection) > 5:
+        lastGarbageCollection = tickNow()
+        gc.collect()
+
+    
